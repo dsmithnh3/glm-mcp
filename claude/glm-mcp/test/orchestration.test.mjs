@@ -164,3 +164,38 @@ test("a follow-up after a finished run keeps roles alternating", async () => {
   const r2 = await runGlmAgent({ model: "fake", task: "Two.", threadId: r1.threadId, messageFn: fake });
   assert.equal(r2.text, "Second done.");
 });
+
+test("every GLM request goes out as glm-5.3 with thinking on and max effort", async () => {
+  const { glmMessage } = await import("../src/glmClient.js");
+  const { resolveModel } = await import("../src/router.js");
+  const sent = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    sent.push({ url: String(url), body: JSON.parse(init.body) });
+    const sse = [
+      'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1,"output_tokens":0}}}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}\n\n',
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ].join("");
+    return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  try {
+    const off = new Date("2026-10-21T03:00:00Z"); // 11:00 China: off-peak
+    const peak = new Date("2026-10-21T07:00:00Z"); // 15:00 China: peak
+    assert.equal(resolveModel("auto", off), "glm-5.3");
+    assert.equal(resolveModel("auto", peak), "glm-5.3");
+    await glmMessage({ model: resolveModel("auto", off), messages: [{ role: "user", content: "hi" }], thinking: false });
+    const b = sent[0].body;
+    assert.match(sent[0].url, /\/v1\/messages$/);
+    assert.equal(b.model, "glm-5.3");
+    assert.equal(b.thinking.type, "enabled", "thinking is on even when a caller passes thinking:false");
+    assert.ok(b.thinking.budget_tokens < b.max_tokens && b.thinking.budget_tokens >= 1024);
+    assert.deepEqual(b.output_config, { effort: "max" });
+    assert.equal(b.reasoning_effort, "max");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

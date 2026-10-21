@@ -38,9 +38,12 @@ const env = {
   ...process.env,
   ANTHROPIC_BASE_URL: BASE,
   ANTHROPIC_AUTH_TOKEN: KEY,
-  ANTHROPIC_DEFAULT_OPUS_MODEL: cfg.GLM_OFFPEAK_MODEL || "glm-5.2",
-  ANTHROPIC_DEFAULT_SONNET_MODEL: cfg.GLM_OFFPEAK_MODEL || "glm-5.2",
-  ANTHROPIC_DEFAULT_HAIKU_MODEL: cfg.GLM_CHEAP_MODEL || "glm-4.5-air",
+  // Every slot on GLM-5.3 by default (GLM_MODEL overrides); max effort via the env var, the only
+  // way Claude Code accepts "max" as a default (code.claude.com/docs/en/model-config).
+  ANTHROPIC_DEFAULT_OPUS_MODEL: cfg.GLM_MODEL || "glm-5.3",
+  ANTHROPIC_DEFAULT_SONNET_MODEL: cfg.GLM_MODEL || "glm-5.3",
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: cfg.GLM_MODEL || "glm-5.3",
+  CLAUDE_CODE_EFFORT_LEVEL: cfg.GLM_EFFORT || "max",
   API_TIMEOUT_MS: cfg.API_TIMEOUT_MS || "3000000",
 };
 

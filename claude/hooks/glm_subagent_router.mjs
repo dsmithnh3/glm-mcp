@@ -162,8 +162,8 @@ function inferProfile(text) {
       const rec = recommend(profile);
       const peak = isPeak();
       peakNote = peak
-        ? `Currently CHINA PEAK (14:00-18:00 UTC+8): GLM-5.2 costs ~3x now, so the router routes LESS to GLM during peak (only stronger-fit tasks go to GLM).`
-        : `Currently OFF-PEAK in China: "auto" uses GLM-5.2 (best capability, cheapest now).`;
+        ? `Currently CHINA PEAK (14:00-18:00 UTC+8): ${rec.model || "GLM-5.x"} costs more now, so the router routes LESS to GLM during peak. GLM runs at max reasoning effort.`
+        : `Currently OFF-PEAK in China: "auto" uses ${rec.model || "glm-5.3"} at max reasoning effort.`;
       if (rec.engine !== "glm") {
         verdict = `KEEP ON OPUS (inferred: ${profile.taskType}, confidence ${rec.confidence}). Why: ${rec.reasons[0] || ""}`;
       } else if (repoTask) {

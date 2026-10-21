@@ -17,7 +17,7 @@ import "./loadEnv.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { glmMessage, config, usageSummary } from "./glmClient.js";
+import { glmMessage, config, usageSummary, effortConfig } from "./glmClient.js";
 import {
   resolveModel,
   recommend,
@@ -94,7 +94,7 @@ server.registerTool(
         .optional()
         .describe("Model id or 'auto' (default). e.g. glm-5.2, glm-4.7, glm-4.5-air. 'auto' picks peak-aware."),
       system: z.string().optional().describe("Optional system prompt to steer GLM's role/format."),
-      thinking: z.boolean().optional().describe("Enable GLM reasoning mode for harder tasks (slower). Default false."),
+      thinking: z.boolean().optional().describe("Ignored: GLM-5.3 always reasons, at GLM_EFFORT (default max)."),
       max_tokens: z.union([z.literal("auto"), z.number().int().min(256).max(131072)]).optional().describe("'auto' (default): uncapped/generous — you (the orchestrating agent) decide. Pass a number (256–131072) to cap this call. (GLM_CAP=on enforces a hard limit regardless.)"),
       format: z.enum(["concise", "detailed"]).optional().describe("concise (default) or detailed metadata."),
     },
@@ -242,7 +242,7 @@ server.registerTool(
       title: z.string().optional().describe("Short label for the thread (shown in glm_thread list)."),
       context: z.string().optional().describe("Extra context/constraints: files and readers from codegraph, acceptance criteria, tests to run."),
       model: z.string().optional().describe("Model id or 'auto' (default, peak-aware)."),
-      thinking: z.boolean().optional().describe("Enable GLM reasoning mode for harder tasks. Default false."),
+      thinking: z.boolean().optional().describe("Ignored: GLM-5.3 always reasons, at GLM_EFFORT (default max)."),
       max_tokens: z.union([z.literal("auto"), z.number().int().min(256).max(131072)]).optional().describe("'auto' (default) or a per-turn cap."),
       dry_run: z.boolean().optional().describe("If true, GLM proposes a diff and writes nothing. Default false."),
       background: z.boolean().optional().describe("If true, start the run and return the thread_id immediately; use glm_thread to check status, wait, answer questions, or cancel. Default false."),
@@ -433,6 +433,7 @@ server.registerTool(
       peak_now: isPeak(now),
       flagship_multiplier: `${peakMultiplier(now)}x`,
       auto_model_now: resolveModel("auto", now),
+      reasoning: { effort: effortConfig.effort, sent_as: effortConfig.fields, thinking: effortConfig.thinking },
       models: { offpeak: MODELS.OFFPEAK_MODELS.join(", "), peak: MODELS.PEAK_MODELS.join(", "), cheap: MODELS.CHEAP_MODEL },
       base_url: config.BASE_URL,
       api_key_loaded: config.hasKey,

@@ -183,7 +183,7 @@ node ~/.claude/glm-code.mjs        # macOS/Linux/Windows
 ~/.claude/glm-code.cmd             # Windows convenience wrapper
 ```
 
-It launches Claude Code with the whole session routed to GLM (main model = glm-5.2), reading your key
+It launches Claude Code with the whole session routed to GLM (every model slot = glm-5.3, max effort), reading your key
 from `.env`. Your normal `claude` command is untouched. Pick per launch:
 - **`claude`** → hybrid: Opus main + GLM delegate (oversight, best quality)
 - **`glm-code`** → full-GLM: GLM *is* the agent (~100% GLM tokens, no Opus)
@@ -200,7 +200,8 @@ from `.env`. Your normal `claude` command is untouched. Pick per launch:
 | `GLM_MAX_TOKENS` | `32768` | The hard per-call limit applied **only when `GLM_CAP=on`**. (`max_tokens` is a ceiling, not a target — you pay for actual output.) |
 | `GLM_MAX_TOKENS_CEILING` | `131072` | The generous default used when the cap is **off**. |
 | `GLM_MAX_CONCURRENT` | `1` | GLM caps in-flight requests; keep at 1. |
-| `GLM_OFFPEAK_MODEL` / `GLM_PEAK_MODEL` | `glm-5.2` / `glm-5.2` | Model(s) for `auto`. **Each can be a comma-separated list** (e.g. `glm-5.2,glm-5-turbo`) and the router auto-picks — most capable for hard tasks, cheapest for easy ones. **Peak rule:** when `auto` lands on a glm-5.x model (3× surcharge) the router routes **less** work to GLM at peak; if you include a no-surcharge model (e.g. `GLM_PEAK_MODEL=glm-5.2,glm-4.7`) it's preferred at peak and GLM stays fine to use. |
+| `GLM_MODEL` | `glm-5.3` | Default for every `auto` pick (off-peak, peak and cheap). `GLM_OFFPEAK_MODEL` / `GLM_PEAK_MODEL` / `GLM_CHEAP_MODEL` still accept a comma list to override. |
+| `GLM_EFFORT` | `max` | GLM-5.3 reasoning effort: `low`, `high` or `max`. Thinking is always on, because GLM-5.3 cannot disable it. Sent as `output_config.effort` and `reasoning_effort`; trim with `GLM_EFFORT_FIELDS`. |
 | `GLM_PEAK_START_CN` / `GLM_PEAK_END_CN` | `14` / `18` | Peak window (China hour, UTC+8). |
 | `GLM_AGENT_MAX_ITERS` | `30` | Max tool-loop turns for `glm_agent`. |
 
