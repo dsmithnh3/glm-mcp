@@ -9,9 +9,15 @@ cheaper. Full protocol: `~/.claude/glm-mcp/docs/ORCHESTRATION.md`.
    symbols, and every reader in the blast radius. Do not bulk-read files yourself.
 2. **Isolate it.** For any change in a git repo, create a worktree and pass it as `workdir`. Never
    point GLM at a checkout another session is using.
-3. **Brief GLM** with `glm_agent`. Include the goal, the absolute `workdir`, the files and readers
-   from CodeGraph, the repo rules that apply, the exact tests to run, and what done looks like. GLM
-   receives the repo's AGENTS.md/CLAUDE.md and runs `codegraph explore` itself. Use
+3. **Brief GLM** with `glm_agent`, always in these four parts (Z.ai's recommended task format):
+   - **Goal:** the one outcome wanted.
+   - **Context:** the absolute `workdir`, the files and readers from CodeGraph, and the decisions
+     already made.
+   - **Constraints:** the repo rules that apply, what not to touch, and no new dependencies unless
+     stated.
+   - **Done when:** the exact tests or commands that must pass, with exit codes, and what to report.
+
+   GLM receives the repo's AGENTS.md/CLAUDE.md and runs `codegraph explore` itself. Use
    `background: true` for long work and keep coordinating in the meantime.
 4. **Talk to it.** If GLM pauses with a question, answer it with `glm_thread` `reply`. Check progress
    with `status`, block on it with `wait`, stop it with `cancel`, and see everything with
