@@ -124,7 +124,8 @@ tool-heavy dependent loops, huge context, vision, or anything you mark sensitive
 | `glm_recommend` | free (local) | GLM-or-Opus decision + model pick + reasons. |
 | `glm_status` | free (local) | Peak window, active model, key/config health. |
 | `glm_delegate` | GLM tokens | Text in → text out. GLM drafts; you place it. |
-| `glm_agent` | GLM tokens | GLM works your repo directly (read/write/edit/bash). Returns a diff + action log + git revert; supports `dry_run` (propose, don't write). |
+| `glm_agent` | GLM tokens | GLM works your repo directly (read/write/edit/bash), with the repo's AGENTS.md/CLAUDE.md and CodeGraph. Every run is a **thread**; `background: true` returns its id at once. Returns the full diff, action log and a per-file revert hint; supports `dry_run`. |
+| `glm_thread` | free / GLM tokens | The live channel: `list`, `status`, `wait`, `reply` (answer GLM's question or follow up), `cancel`, `history`. |
 
 ### Example: delegating a read-and-summarize task
 
@@ -139,6 +140,19 @@ the file-touching / heavy work for cents.</sub>
 
 ---
 
+## Orchestration: Claude coordinates, GLM implements and self-reviews
+
+Claude is the orchestrator and final reviewer; GLM does the token-heavy work. The loop:
+1. Claude scopes the task with CodeGraph.
+2. Claude briefs GLM in a git worktree.
+3. GLM works, and pauses with `ask_orchestrator` when it needs a decision.
+4. Claude answers with `glm_thread reply`.
+5. A second GLM thread reviews the diff.
+6. Claude reviews the full diff and the test results last.
+
+`install.mjs` writes this policy into the global `CLAUDE.md` between markers, so re-installing
+updates it. The full protocol and every guard are in [docs/ORCHESTRATION.md](docs/ORCHESTRATION.md).
+
 ## Oversight (how you stay in control of `glm_agent`)
 
 - **Entry:** you/Opus choose when to call it and with which `workdir`.
@@ -146,9 +160,14 @@ the file-touching / heavy work for cents.</sub>
 - **After a real run:** you get the unified **diff**, an **action log**, and a one-command
   **git revert** (`git checkout <baseline> -- .`).
 
-Note: file/bash ops inside `glm_agent` run in the MCP server process (not gated per-edit) and are
-scoped to the `workdir` you pass. That's intentional (max autonomy) — point it only at repos you're
-fine letting it modify.
+Guards inside `glm_agent` ([docs/ORCHESTRATION.md](docs/ORCHESTRATION.md#guards)):
+- **Hooks:** every `run_bash` command goes through your own Claude Code PreToolUse Bash hooks, global and the repo's.
+- **Credentials:** credential files are refused.
+- **Environment:** the shell environment carries no API keys or tokens.
+- **Refusals:** each one is returned to GLM as `BLOCKED`, and listed for you.
+
+These run in the MCP server process and are best-effort. Give GLM a worktree, and keep the final
+review.
 
 ---
 
@@ -164,7 +183,7 @@ node ~/.claude/glm-code.mjs        # macOS/Linux/Windows
 ~/.claude/glm-code.cmd             # Windows convenience wrapper
 ```
 
-It launches Claude Code with the whole session routed to GLM (main model = glm-5.2), reading your key
+It launches Claude Code with the whole session routed to GLM (every model slot = glm-5.3, max effort), reading your key
 from `.env`. Your normal `claude` command is untouched. Pick per launch:
 - **`claude`** → hybrid: Opus main + GLM delegate (oversight, best quality)
 - **`glm-code`** → full-GLM: GLM *is* the agent (~100% GLM tokens, no Opus)
@@ -181,7 +200,8 @@ from `.env`. Your normal `claude` command is untouched. Pick per launch:
 | `GLM_MAX_TOKENS` | `32768` | The hard per-call limit applied **only when `GLM_CAP=on`**. (`max_tokens` is a ceiling, not a target — you pay for actual output.) |
 | `GLM_MAX_TOKENS_CEILING` | `131072` | The generous default used when the cap is **off**. |
 | `GLM_MAX_CONCURRENT` | `1` | GLM caps in-flight requests; keep at 1. |
-| `GLM_OFFPEAK_MODEL` / `GLM_PEAK_MODEL` | `glm-5.2` / `glm-5.2` | Model(s) for `auto`. **Each can be a comma-separated list** (e.g. `glm-5.2,glm-5-turbo`) and the router auto-picks — most capable for hard tasks, cheapest for easy ones. **Peak rule:** when `auto` lands on a glm-5.x model (3× surcharge) the router routes **less** work to GLM at peak; if you include a no-surcharge model (e.g. `GLM_PEAK_MODEL=glm-5.2,glm-4.7`) it's preferred at peak and GLM stays fine to use. |
+| `GLM_MODEL` | `glm-5.3` | Default for every `auto` pick (off-peak, peak and cheap). `GLM_OFFPEAK_MODEL` / `GLM_PEAK_MODEL` / `GLM_CHEAP_MODEL` still accept a comma list to override. |
+| `GLM_EFFORT` | `max` | GLM-5.3 reasoning effort: `low`, `high` or `max`. Thinking is always on, because GLM-5.3 cannot disable it. Sent as `output_config.effort` and `reasoning_effort`; trim with `GLM_EFFORT_FIELDS`. |
 | `GLM_PEAK_START_CN` / `GLM_PEAK_END_CN` | `14` / `18` | Peak window (China hour, UTC+8). |
 | `GLM_AGENT_MAX_ITERS` | `30` | Max tool-loop turns for `glm_agent`. |
 

@@ -42,6 +42,9 @@ jobs:
       - name: Keyless MCP introspection smoke
         run: node scripts/smoke-stdio.mjs
 
+      - name: Orchestration tests (guards, hook parity, ask/reply threads; fake GLM, no key)
+        run: node --test claude/glm-mcp/test/*.test.mjs
+
   codex:
     name: Codex installer + hooks + plugin
     runs-on: ubuntu-latest

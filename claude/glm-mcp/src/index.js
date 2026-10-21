@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // index.js -- GLM MCP server.
-// Exposes GLM (Zhipu/Z.ai) as a delegation subagent for Claude Code via three tools:
-//   glm_delegate   -- run a self-contained subtask on GLM and get the result
+// Exposes GLM (Zhipu/Z.ai) to Claude Code as a cheap implementer the orchestrator can talk to:
+//   glm_agent      -- run GLM as a file-accessing coding agent (a resumable THREAD; can run in background)
+//   glm_thread     -- live channel: list / status / wait / reply (answer GLM's questions) / cancel / history
+//   glm_delegate   -- text-only subtask (opt-in: GLM_DELEGATE=on)
 //   glm_recommend  -- advisory: should this task go to GLM or Opus? which model?
 //   glm_status     -- peak window, model picks, cost multipliers, config sanity
 //
@@ -15,7 +17,7 @@ import "./loadEnv.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { glmMessage, config, usageSummary } from "./glmClient.js";
+import { glmMessage, config, usageSummary, effortConfig } from "./glmClient.js";
 import {
   resolveModel,
   recommend,
@@ -29,10 +31,12 @@ import {
   USE_HAIKU,
 } from "./router.js";
 import { runGlmAgent } from "./glmAgent.js";
+import { newThread, saveThread, loadThread, listThreads, lastQuestion, jobOf, startJob, waitJob, cancelJob } from "./threads.js";
+import { resolve as resolvePath } from "node:path";
 
 const CHARACTER_LIMIT = 50000;
 
-const server = new McpServer({ name: "glm-mcp", version: "1.0.0" });
+const server = new McpServer({ name: "glm-mcp", version: "1.4.0" });
 
 const TASK_TYPES = [
   // strong GLM
@@ -90,7 +94,7 @@ server.registerTool(
         .optional()
         .describe("Model id or 'auto' (default). e.g. glm-5.2, glm-4.7, glm-4.5-air. 'auto' picks peak-aware."),
       system: z.string().optional().describe("Optional system prompt to steer GLM's role/format."),
-      thinking: z.boolean().optional().describe("Enable GLM reasoning mode for harder tasks (slower). Default false."),
+      thinking: z.boolean().optional().describe("Ignored: GLM-5.3 always reasons, at GLM_EFFORT (default max)."),
       max_tokens: z.union([z.literal("auto"), z.number().int().min(256).max(131072)]).optional().describe("'auto' (default): uncapped/generous — you (the orchestrating agent) decide. Pass a number (256–131072) to cap this call. (GLM_CAP=on enforces a hard limit regardless.)"),
       format: z.enum(["concise", "detailed"]).optional().describe("concise (default) or detailed metadata."),
     },
@@ -157,78 +161,202 @@ server.registerTool(
 }
 
 // ----------------------------- glm_agent -----------------------------
+// Formats one run (or a job's current state) for the orchestrator.
+function formatRun(r, { chosen, now, format, state, job }) {
+  const inTok = r.usage.input_tokens || 0;
+  const outTok = r.usage.output_tokens || 0;
+  const totalTok = inTok + outTok;
+  const cost = estimateCost(chosen, inTok, outTok, now);
+  const opusCost = estimateCost("claude-opus", inTok, outTok, now);
+  const xCheaper = cost > 0 ? Math.round(opusCost / cost) : "?";
+  const banner = r.dryRun ? "*** DRY RUN — nothing was written; this is GLM's PROPOSED change for you to approve ***\n" : "";
+  const header =
+    `[GLM agent] thread=${r.threadId} | state=${state} | ${chosen} | dir=${r.root} | ${r.iters} iterations` +
+    `${r.hitCap ? " (HIT CAP -- may be incomplete; continue the thread to finish)" : ""}${r.cancelled ? " (CANCELLED -- partial)" : ""}` +
+    ` | ${r.actions.length} actions | ${r.changedFiles.length} files | repo rules ${r.rulesLoaded ? "loaded" : "none found"} | codegraph ${r.codegraphIndexed ? "indexed" : "not indexed"}`;
+  const blocked = r.actions.filter((a) => a.startsWith("BLOCKED") || a.startsWith("REFUSED"));
+  const blockedTxt = blocked.length ? `\n\nRefused by guards (${blocked.length}):\n- ${blocked.join("\n- ")}` : "";
+  const showDiff = r.dryRun || format !== "concise";
+  const actions = showDiff && r.actions.length ? `\nActions:\n- ${r.actions.join("\n- ")}` : "";
+  const diff = showDiff
+    ? (r.diff ? `\n\n=== DIFF (review this) ===\n${r.diff}` : "\n\n(no file changes)")
+    : (r.changedFiles.length ? `\n\nChanged files: ${r.changedFiles.join(", ")}  (format:"detailed" for the diff)` : "\n\n(no file changes)");
+  const revert = !r.dryRun && r.git && r.git.revertHint && r.changedFiles.length ? `\n\nRevert: ${r.git.revertHint}` : "";
+  const ask = r.question
+    ? `\n\n=== GLM IS WAITING FOR YOU ===\nQuestion: ${r.question}\nAnswer with glm_thread {action:"reply", thread_id:"${r.threadId}", message:"..."}.`
+    : "";
+  const stats =
+    `\n\n=== GLM STATS (this run) ===\n` +
+    `model:      ${chosen}\n` +
+    `tokens:     ${totalTok} on GLM (${inTok} in / ${outTok} out)\n` +
+    `iterations: ${r.iters}${r.hitCap ? " (hit cap)" : ""}   files changed: ${r.changedFiles.length}\n` +
+    `est. cost:  $${cost}  (~${xCheaper}x cheaper than Opus)` +
+    (job ? `\nstarted:    ${job.startedAt}${job.finishedAt ? `   finished: ${job.finishedAt}` : ""}` : "");
+  return clip(`${banner}${header}${actions}${diff}${blockedTxt}${revert}\n\n=== GLM SUMMARY ===\n${r.text}${ask}${stats}`);
+}
+
+function jobStatusText(job, format) {
+  if (!job) return null;
+  const now = new Date();
+  if (job.state === "running") {
+    return `[GLM agent] thread=${job.id} | state=running | started ${job.startedAt}\n` +
+      `Recent progress:\n${job.progress.slice(-12).join("\n") || "(starting)"}\n\n` +
+      `Check again with glm_thread {action:"status"|"wait", thread_id:"${job.id}"}; cancel with action:"cancel".`;
+  }
+  if (job.state === "error") return `[GLM agent] thread=${job.id} | state=error | ${job.error}\nThe thread is saved; you can continue it with a follow-up.`;
+  return formatRun(job.result, { chosen: job.model, now, format, state: job.state, job });
+}
+
+// Starts a run as a tracked job; returns the job. Sync callers simply await job.promise.
+function launch({ task, context, workdir, thread_id, title, model, thinking, max_tokens, dry_run }) {
+  const now = new Date();
+  const chosen = resolveModel(model || "auto", now);
+  let threadId = thread_id;
+  if (!threadId) {
+    // allocate the id up front so a background caller gets it immediately
+    const t = newThread(workdir ? resolvePath(workdir) : process.cwd(), title || String(task).split("\n")[0].slice(0, 100));
+    saveThread(t);
+    threadId = t.id;
+  }
+  const job = startJob(threadId, title || String(task).slice(0, 100), ({ signal, onProgress }) =>
+    runGlmAgent({ model: chosen, task, context, workdir, threadId, title, maxTokens: resolveMaxTokens(max_tokens), thinking, dryRun: dry_run, onProgress, signal })
+  );
+  job.model = chosen;
+  return job;
+}
+
 server.registerTool(
   "glm_agent",
   {
     title: "Run GLM as a file-accessing agent",
     description:
-      "Run GLM as a real coding agent with its OWN file tools (read/write/edit/list/bash); it works " +
-      "your repo end-to-end on GLM tokens (~10x cheaper than Opus). Prefer this over doing repo work " +
-      "yourself; it also handles text-only subtasks (give it a task with no file edits). Pass task + absolute workdir. Returns a concise summary+stats (use dry_run to preview " +
-      "a diff first). Not for sensitive, huge-context, or heavy dependent-tool-loop work.",
+      "Run GLM as a real coding agent with its OWN file tools (read/write/edit/list/bash) on GLM tokens (~10x cheaper than Opus). " +
+      "GLM receives the repo's AGENTS.md/CLAUDE.md, uses `codegraph explore` itself, and its shell runs through the same safety hooks as yours. " +
+      "Every run is a THREAD: GLM can pause with a question (ask_orchestrator); answer it and check/continue/cancel runs with glm_thread. " +
+      "Pass task + absolute workdir (ideally a git worktree). background:true returns the thread_id immediately so you can keep working. " +
+      "Default output includes the full diff for your review.",
     inputSchema: {
-      task: z.string().min(1).describe("The coding task for GLM to carry out end-to-end in the repo."),
-      workdir: z
-        .string()
-        .optional()
-        .describe("Absolute path to the project root GLM should operate in. Defaults to the server's cwd; always pass it explicitly."),
-      context: z.string().optional().describe("Optional extra context/constraints (GLM can also read files itself)."),
+      task: z.string().min(1).describe("The task for GLM, or (with thread_id) your follow-up to an existing thread."),
+      workdir: z.string().optional().describe("Absolute path to the project root GLM should operate in (a git worktree is best). Required for a new thread."),
+      thread_id: z.string().optional().describe("Continue an existing thread (its workdir is reused)."),
+      title: z.string().optional().describe("Short label for the thread (shown in glm_thread list)."),
+      context: z.string().optional().describe("Extra context/constraints: files and readers from codegraph, acceptance criteria, tests to run."),
       model: z.string().optional().describe("Model id or 'auto' (default, peak-aware)."),
-      thinking: z.boolean().optional().describe("Enable GLM reasoning mode for harder tasks. Default false."),
-      max_tokens: z.union([z.literal("auto"), z.number().int().min(256).max(131072)]).optional().describe("'auto' (default): uncapped/generous per turn — you (the orchestrating agent) decide. Pass a number (256–131072) to cap each turn. (GLM_CAP=on enforces a hard limit regardless.)"),
-      dry_run: z.boolean().optional().describe("If true, GLM proposes a diff and writes nothing (preview before applying). Default false."),
-      format: z.enum(["concise", "detailed"]).optional().describe("concise (default: summary+stats+changed files) or detailed (adds full diff). dry_run always shows the diff."),
+      thinking: z.boolean().optional().describe("Ignored: GLM-5.3 always reasons, at GLM_EFFORT (default max)."),
+      max_tokens: z.union([z.literal("auto"), z.number().int().min(256).max(131072)]).optional().describe("'auto' (default) or a per-turn cap."),
+      dry_run: z.boolean().optional().describe("If true, GLM proposes a diff and writes nothing. Default false."),
+      background: z.boolean().optional().describe("If true, start the run and return the thread_id immediately; use glm_thread to check status, wait, answer questions, or cancel. Default false."),
+      format: z.enum(["concise", "detailed"]).optional().describe("detailed (default: summary + full diff + actions) or concise (changed file names only)."),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   },
-  async ({ task, workdir, context, model = "auto", thinking = false, max_tokens = "auto", dry_run = false, format = "concise" }, extra) => {
-    const now = new Date();
-    const chosen = resolveModel(model, now);
-    const onProgress = makeProgress(extra);
+  async ({ task, workdir, thread_id, title, context, model = "auto", thinking = false, max_tokens = "auto", dry_run = false, background = false, format = "detailed" }, extra) => {
+    if (!thread_id && !workdir) {
+      return { isError: true, content: [{ type: "text", text: "glm_agent needs an absolute workdir for a new thread (or a thread_id to continue one)." }] };
+    }
+    let job;
     try {
-      const r = await runGlmAgent({ model: chosen, task, context, workdir, maxTokens: resolveMaxTokens(max_tokens), thinking, dryRun: dry_run, onProgress, signal: extra?.signal });
-      const inTok = r.usage.input_tokens || 0;
-      const outTok = r.usage.output_tokens || 0;
-      const totalTok = inTok + outTok;
-      const cost = estimateCost(chosen, inTok, outTok, now);
-      const opusCost = estimateCost("claude-opus", inTok, outTok, now);
-      const xCheaper = cost > 0 ? Math.round(opusCost / cost) : "?";
-      const banner = r.dryRun ? "*** DRY RUN — nothing was written; this is GLM's PROPOSED change for you to approve ***\n" : "";
-      const header =
-        `[GLM agent] ${chosen} | dir=${r.root} | ${r.iters} iterations${r.hitCap ? " (HIT CAP -- may be incomplete)" : ""}${r.cancelled ? " (CANCELLED -- partial)" : ""} | ${r.actions.length} actions | ${r.changedFiles.length} files`;
-      // Concise by default: keep what the caller (Claude) must read minimal -> more burden stays on
-      // GLM. The full diff + per-action list appear only for dry_run or format:"detailed".
-      const showDiff = r.dryRun || format === "detailed";
-      const actions = (showDiff && r.actions.length) ? `\nActions:\n- ${r.actions.join("\n- ")}` : "";
-      const diff = showDiff
-        ? (r.diff ? `\n\n=== DIFF (review this) ===\n${r.diff}` : "\n\n(no file changes)")
-        : (r.changedFiles.length
-            ? `\n\nChanged files: ${r.changedFiles.join(", ")}  (call with format:"detailed" or dry_run:true to see the full diff, or use \`git diff\`)`
-            : "\n\n(no file changes)");
-      const revert = !r.dryRun && r.git && r.git.revertHint ? `\n\nRevert: ${r.git.revertHint}` : "";
-      // Prominent stats footer, shown after every glm_agent run finishes.
-      const stats =
-        `\n\n=== GLM STATS (this subagent) ===\n` +
-        `model:      ${chosen}\n` +
-        `tokens:     ${totalTok} delegated to GLM (${inTok} in / ${outTok} out)\n` +
-        `iterations: ${r.iters}${r.hitCap ? " (hit cap)" : ""}   files changed: ${r.changedFiles.length}\n` +
-        `est. cost:  $${cost}  (~${xCheaper}x cheaper than Opus)`;
-      return { content: [{ type: "text", text: clip(`${banner}${header}${actions}${diff}${revert}\n\n=== GLM SUMMARY ===\n${r.text}${stats}`) }] };
+      job = launch({ task, context, workdir, thread_id, title, model, thinking, max_tokens, dry_run });
     } catch (e) {
-      if (e && e.cancelled) return { content: [{ type: "text", text: "GLM agent cancelled." }] };
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text",
-            text:
-              `GLM agent failed: ${e.message}\n\n` +
-              `- 'concurrency'/'Too much concurrency': retry shortly (GLM caps in-flight ~1).\n` +
-              `- auth error: check GLM_API_KEY.\n` +
-              `- If GLM is looping or the task is hard/critical, run it on Opus instead.`,
-          },
-        ],
-      };
+      return { isError: true, content: [{ type: "text", text: `GLM agent could not start: ${e.message}` }] };
+    }
+    if (background) {
+      return { content: [{ type: "text", text:
+        `[GLM agent] started in background | thread=${job.id} | model=${job.model}\n` +
+        `Check: glm_thread {action:"status", thread_id:"${job.id}"} · block until done or a question: glm_thread {action:"wait", thread_id:"${job.id}", wait_seconds:600} · stop: action:"cancel".` } ] };
+    }
+    const onProgress = makeProgress(extra);
+    const relay = setInterval(() => { const p = job.progress[job.progress.length - 1]; if (p) onProgress(p); }, 2000);
+    const onAbort = () => cancelJob(job.id);
+    extra?.signal?.addEventListener?.("abort", onAbort);
+    try {
+      await job.promise;
+    } finally {
+      clearInterval(relay);
+      extra?.signal?.removeEventListener?.("abort", onAbort);
+    }
+    if (job.state === "error") {
+      return { isError: true, content: [{ type: "text", text:
+        `GLM agent failed: ${job.error}\n\nThread ${job.id} is saved — continue it with glm_thread reply once fixed.\n` +
+        `- 'concurrency'/'Too much concurrency': retry shortly (GLM caps in-flight ~1).\n- auth error: check GLM_API_KEY.` }] };
+    }
+    return { content: [{ type: "text", text: jobStatusText(job, format) }] };
+  }
+);
+
+// ----------------------------- glm_thread -----------------------------
+server.registerTool(
+  "glm_thread",
+  {
+    title: "Talk to, monitor, and steer GLM threads",
+    description:
+      "The live channel to GLM. action:'list' shows recent threads and any pending question; 'status' shows a thread's state " +
+      "(running with recent progress, waiting_for_orchestrator with GLM's question, done with summary+diff, error, cancelled); " +
+      "'wait' blocks up to wait_seconds until it finishes or asks something; 'reply' answers GLM's question or sends a follow-up " +
+      "and continues the run (background:true to return immediately); 'cancel' stops a running thread; 'history' shows the conversation.",
+    inputSchema: {
+      action: z.enum(["list", "status", "wait", "reply", "cancel", "history"]),
+      thread_id: z.string().optional().describe("Required for every action except list."),
+      message: z.string().optional().describe("For reply: your answer to GLM's question, or a follow-up instruction."),
+      wait_seconds: z.number().int().min(0).max(1800).optional().describe("For wait (default 600) and for a non-background reply."),
+      background: z.boolean().optional().describe("For reply: return immediately instead of waiting. Default false."),
+      format: z.enum(["concise", "detailed"]).optional().describe("detailed (default) includes the diff when a run has finished."),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  },
+  async ({ action, thread_id, message, wait_seconds, background = false, format = "detailed" }, extra) => {
+    const text = (t) => ({ content: [{ type: "text", text: clip(t) }] });
+    const err = (t) => ({ isError: true, content: [{ type: "text", text: t }] });
+    try {
+      if (action === "list") {
+        const rows = listThreads(25).map((t) => {
+          const job = jobOf(t.id);
+          const state = job ? job.state : t.pending_question ? "waiting_for_orchestrator" : "idle";
+          return `- ${t.id} | ${state} | ${t.updated} | ${t.title}${t.pending_question ? `\n    QUESTION: ${t.pending_question}` : ""}\n    dir: ${t.root}`;
+        });
+        return text(rows.length ? `GLM threads (newest first):\n${rows.join("\n")}` : "No GLM threads yet.");
+      }
+      if (!thread_id) return err(`glm_thread ${action} needs thread_id.`);
+      const thread = loadThread(thread_id);
+      const job = jobOf(thread_id);
+
+      if (action === "status" || action === "wait") {
+        const j = action === "wait" ? await waitJob(thread_id, wait_seconds ?? 600) : job;
+        const live = jobStatusText(j, format);
+        if (live) return text(live);
+        const q = thread.pendingAskId ? lastQuestion(thread) : null;
+        return text(`[GLM thread] ${thread_id} | state=${q ? "waiting_for_orchestrator" : "idle"} (no run in this server session) | dir=${thread.root}\n` +
+          `title: ${thread.title}\nruns: ${(thread.runs || []).length}, last update ${thread.updated}` +
+          (q ? `\n\n=== GLM IS WAITING FOR YOU ===\nQuestion: ${q}\nAnswer with action:"reply".` : ""));
+      }
+      if (action === "cancel") {
+        return text(cancelJob(thread_id) ? `Cancel requested for ${thread_id}; it stops after the current step. Check with action:"status".` : `Thread ${thread_id} is not running.`);
+      }
+      if (action === "history") {
+        const lines = [];
+        for (const m of thread.messages) {
+          const parts = Array.isArray(m.content) ? m.content : [{ type: "text", text: m.content }];
+          for (const p of parts) {
+            if (p.type === "text" && p.text) lines.push(`${m.role === "assistant" ? "GLM" : "ORCHESTRATOR/RESULT"}: ${p.text.slice(0, 1500)}`);
+            else if (p.type === "tool_use") lines.push(`GLM -> ${p.name} ${JSON.stringify(p.input).slice(0, 200)}`);
+            else if (p.type === "tool_result") lines.push(`   <- ${String(typeof p.content === "string" ? p.content : JSON.stringify(p.content)).slice(0, 300)}`);
+          }
+        }
+        return text(`[GLM thread history] ${thread_id}\n${lines.join("\n")}`);
+      }
+      if (action === "reply") {
+        if (!message) return err("reply needs message.");
+        if (job && job.state === "running") return err(`Thread ${thread_id} is still running; wait for it or cancel it first.`);
+        const j = launch({ task: message, thread_id, model: job?.model || "auto" });
+        if (background) return text(`[GLM agent] reply sent; thread ${thread_id} resumed in background. Check with action:"status" or "wait".`);
+        const onProgress = makeProgress(extra);
+        const relay = setInterval(() => { const p = j.progress[j.progress.length - 1]; if (p) onProgress(p); }, 2000);
+        try { await waitJob(thread_id, wait_seconds ?? 1800); } finally { clearInterval(relay); }
+        return text(jobStatusText(j, format));
+      }
+      return err(`unknown action ${action}`);
+    } catch (e) {
+      return err(`glm_thread ${action} failed: ${e.message}`);
     }
   }
 );
@@ -305,6 +433,7 @@ server.registerTool(
       peak_now: isPeak(now),
       flagship_multiplier: `${peakMultiplier(now)}x`,
       auto_model_now: resolveModel("auto", now),
+      reasoning: { effort: effortConfig.effort, sent_as: effortConfig.fields, thinking: effortConfig.thinking },
       models: { offpeak: MODELS.OFFPEAK_MODELS.join(", "), peak: MODELS.PEAK_MODELS.join(", "), cheap: MODELS.CHEAP_MODEL },
       base_url: config.BASE_URL,
       api_key_loaded: config.hasKey,

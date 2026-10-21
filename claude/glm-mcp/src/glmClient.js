@@ -94,7 +94,16 @@ function isRetryable(status, bodyText) {
  * @param {AbortSignal} [p.signal]  cancels the call when the MCP client cancels the tool
  * @returns {Promise<{text:string, usage:object, raw:object}>}
  */
-export async function glmMessage({ model, messages, system, maxTokens = 131072, thinking = false, tools, onToken, signal }) {
+// GLM-5.3 always reasons (thinking cannot be disabled) and takes an effort of low | high | max,
+// default max (docs.z.ai/guides/llm/glm-5.3). Claude Code sends effort to the Anthropic-compatible
+// endpoint as output_config.effort; the GLM docs show a reasoning_effort field. Both are sent by
+// default; GLM_EFFORT_FIELDS trims the list if an endpoint ever rejects one.
+const EFFORT = (process.env.GLM_EFFORT || "max").toLowerCase();
+const EFFORT_FIELDS = (process.env.GLM_EFFORT_FIELDS || "output_config,reasoning_effort").split(",").map((s) => s.trim()).filter(Boolean);
+const THINKING = (process.env.GLM_THINKING || "enabled").toLowerCase(); // enabled | adaptive
+export const effortConfig = { effort: EFFORT, fields: EFFORT_FIELDS, thinking: THINKING };
+
+export async function glmMessage({ model, messages, system, maxTokens = 131072, thinking = true, tools, onToken, signal }) {
   if (!API_KEY) {
     throw new Error(
       "GLM_API_KEY (or ANTHROPIC_AUTH_TOKEN) is not set. Add it to glm-mcp/.env or the MCP server env in .mcp.json."
@@ -108,7 +117,11 @@ export async function glmMessage({ model, messages, system, maxTokens = 131072, 
     stream: true,
     ...(system ? { system } : {}),
     ...(tools && tools.length ? { tools } : {}),
-    ...(thinking ? { thinking: { type: "enabled", budget_tokens: Math.min(maxTokens, 8000) } } : {}),
+    // Reasoning is always on (the `thinking` argument is kept for API compatibility only).
+    // budget_tokens must stay below max_tokens; leave room for the visible answer.
+    thinking: THINKING === "adaptive" ? { type: "adaptive" } : { type: "enabled", budget_tokens: Math.max(1024, maxTokens - Math.min(16384, Math.floor(maxTokens / 4))) },
+    ...(EFFORT_FIELDS.includes("output_config") ? { output_config: { effort: EFFORT } } : {}),
+    ...(EFFORT_FIELDS.includes("reasoning_effort") ? { reasoning_effort: EFFORT } : {}),
   };
 
   await acquire();

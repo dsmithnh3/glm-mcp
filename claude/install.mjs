@@ -11,7 +11,7 @@
 //
 // It is idempotent: re-running updates files without duplicating hook/policy entries.
 
-import { cpSync, mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
+import { cpSync, mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,9 +41,13 @@ cpSync(join(SELF, "glm-mcp"), join(CLAUDE, "glm-mcp"), {
   recursive: true,
   filter: (src) => {
     const base = src.split(/[\\/]/).pop();
-    return base !== "node_modules" && base !== ".env";
+    return base !== "node_modules" && base !== ".env" && base !== "threads" && base !== "usage.jsonl";
   },
 });
+// Docs the global CLAUDE.md policy points at.
+mkdirSync(join(CLAUDE, "glm-mcp", "docs"), { recursive: true });
+copyFileSync(join(SELF, "README.md"), join(CLAUDE, "glm-mcp", "README.md"));
+for (const d of ["RULES.md", "ORCHESTRATION.md"]) copyFileSync(join(SELF, "docs", d), join(CLAUDE, "glm-mcp", "docs", d));
 
 // 2. .env
 step("Setting up .env");
@@ -62,6 +66,7 @@ if (KEY) {
 } else if (!/^GLM_API_KEY=\S+/m.test(readFileSync(envPath, "utf8"))) {
   log("  ⚠ No API key set yet. Edit " + envPath + " and set GLM_API_KEY=... before use.");
 }
+try { chmodSync(envPath, 0o600); log("  .env permissions set to 600"); } catch {}
 
 // 3. npm install
 if (!SKIP_NPM) {
@@ -99,25 +104,44 @@ settings.hooks.PreToolUse ||= [];
 const already = settings.hooks.PreToolUse.some((e) =>
   (e.hooks || []).some((h) => typeof h.command === "string" && h.command.includes("glm_subagent_router"))
 );
+// The subagent tool is "Agent" in current Claude Code builds and "Task" in older ones.
+const MATCHER = "Task|Agent";
 if (!already) {
-  settings.hooks.PreToolUse.push({ matcher: "Task", hooks: [{ type: "command", command: hookCmd }] });
-  log("  added PreToolUse(Task) -> glm_subagent_router");
+  settings.hooks.PreToolUse.push({ matcher: MATCHER, hooks: [{ type: "command", command: hookCmd }] });
+  log(`  added PreToolUse(${MATCHER}) -> glm_subagent_router`);
 } else {
-  log("  hook already present (left as-is)");
+  for (const e of settings.hooks.PreToolUse) {
+    if ((e.hooks || []).some((h) => typeof h.command === "string" && h.command.includes("glm_subagent_router")) && e.matcher !== MATCHER) {
+      log(`  updated hook matcher ${e.matcher} -> ${MATCHER}`);
+      e.matcher = MATCHER;
+    }
+  }
 }
 writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
 
-// 6. Append the global delegation policy (idempotent).
-step("Adding global delegation policy to CLAUDE.md");
+// 6. Global delegation policy, between markers so re-installs replace it (idempotent).
+step("Writing the global delegation policy into CLAUDE.md");
 const claudeMd = join(CLAUDE, "CLAUDE.md");
-const policy = `\n# Delegation (GLM hybrid)\n\nPrefer offloading well-specified, self-contained subtasks to GLM. When you spawn a subagent (the\n\`Task\` tool), a PreToolUse hook injects a \`[GLM router]\` line advising GLM vs Opus -- follow it.\nIf the user explicitly named an agent, honor it. Full rules: \`~/.claude/glm-mcp/README.md\`.\n\n**To actually spend GLM tokens (not Claude tokens): call \`mcp__glm__glm_agent\` directly** for repo\nwork, or \`mcp__glm__glm_delegate\` for pure generation. Prefer calling \`glm_agent\` directly over the\n\`glm\` subagent (which runs on Haiku -- its own writing spends Claude tokens; only the glm_* tools\nspend GLM).\n\n## Maximize GLM's share (you are the expensive one)\nThe main agent is Claude, so keep the burden on GLM: delegate WHOLE tasks, not pre-chewed slivers.\nFor ANY implementation/codegen/edit/refactor/test/docs/analysis task, your FIRST move is\n\`mcp__glm__glm_agent\` with the goal + workdir -- do NOT read/analyze the files yourself first (that\nburns Claude tokens); let GLM read/write/run end-to-end. Spend your own tokens only on understanding\nthe request, delegating, a brief check of the result, and the hard-override cases. Bigger hand-offs\n= more burden on GLM; when unsure, delegate more and do less yourself.\n`;
-const existing = existsSync(claudeMd) ? readFileSync(claudeMd, "utf8") : "";
-if (!existing.includes("[GLM router]")) {
-  writeFileSync(claudeMd, existing + policy);
-  log("  policy appended");
+const START = "<!-- glm-mcp:policy:start -->", END = "<!-- glm-mcp:policy:end -->";
+const policy = readFileSync(join(SELF, "docs", "CLAUDE-policy.md"), "utf8").trim();
+const block = `${START}\n${policy}\n${END}`;
+let md = existsSync(claudeMd) ? readFileSync(claudeMd, "utf8") : "";
+if (existsSync(claudeMd)) writeFileSync(claudeMd + ".bak-" + Date.now(), md);
+if (md.includes(START) && md.includes(END)) {
+  md = md.slice(0, md.indexOf(START)) + block + md.slice(md.indexOf(END) + END.length);
+  log("  policy block replaced");
+} else if (/^# Delegation \(GLM hybrid\)/m.test(md)) {
+  // pre-1.4 install: the unmarked block runs from its heading to the next top-level heading or EOF
+  const i = md.search(/^# Delegation \(GLM hybrid\)/m);
+  const rest = md.slice(i + 1);
+  const j = rest.search(/^# (?!#)/m);
+  md = md.slice(0, i) + block + "\n" + (j >= 0 ? rest.slice(j) : "");
+  log("  pre-1.4 policy block replaced");
 } else {
-  log("  policy already present");
+  md = md.replace(/\s*$/, "\n\n") + block + "\n";
+  log("  policy appended");
 }
+writeFileSync(claudeMd, md);
 
 // 7. Register the MCP server (user scope) via the claude CLI.
 if (!NO_REGISTER) {

@@ -14,10 +14,12 @@ const PEAK_END_HOUR_CN = intEnv("GLM_PEAK_END_CN", 18); // 18:00 UTC+8 (exclusiv
 // Default model picks for "auto". Each may be a COMMA-SEPARATED LIST of candidate models;
 // the router auto-picks one per task (most capable for hard / off-peak work, cheapest for
 // easy / peak work) unless a specific model is requested. A single value works too.
-// Example: GLM_OFFPEAK_MODEL="glm-5.2,glm-5-turbo"
-const OFFPEAK_MODELS = splitModels(process.env.GLM_OFFPEAK_MODEL, "glm-5.2");
-const PEAK_MODELS = splitModels(process.env.GLM_PEAK_MODEL, "glm-5.2");
-const CHEAP_MODEL = process.env.GLM_CHEAP_MODEL || "glm-4.5-air";
+// Default: GLM-5.3 everywhere (Z.ai flagship since 2026-08-14; on the Coding Plan older ids route
+// to it anyway). Override with a comma list, e.g. GLM_OFFPEAK_MODEL="glm-5.3,glm-5.3-flash".
+const DEFAULT_MODEL = process.env.GLM_MODEL || "glm-5.3";
+const OFFPEAK_MODELS = splitModels(process.env.GLM_OFFPEAK_MODEL, DEFAULT_MODEL);
+const PEAK_MODELS = splitModels(process.env.GLM_PEAK_MODEL, DEFAULT_MODEL);
+const CHEAP_MODEL = process.env.GLM_CHEAP_MODEL || DEFAULT_MODEL;
 
 function splitModels(val, fallback) {
   const list = (val || fallback).split(",").map((s) => s.trim()).filter(Boolean);
@@ -27,6 +29,8 @@ function splitModels(val, fallback) {
 // Rough public-ish per-1M-token rates (USD) for cost estimation only.
 // These are approximations from research and WILL drift -- treat as indicative.
 const RATES = {
+  "glm-5.3": { in: 1.4, out: 4.4 }, // Z.ai price list, 2026-08 (cached input 0.26)
+  "glm-5.3[1m]": { in: 1.4, out: 4.4 },
   "glm-5.2": { in: 0.6, out: 2.2 },
   "glm-5.2[1m]": { in: 1.2, out: 4.4 },
   "glm-5-turbo": { in: 0.3, out: 1.1 },

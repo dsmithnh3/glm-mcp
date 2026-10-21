@@ -174,14 +174,19 @@ function runSmoke(extraEnv, expectedTools, label) {
   });
 }
 
+// The Claude server also exposes glm_thread (the orchestrator's live channel to GLM threads);
+// the Codex server (codex/glm-server.mjs) does not.
+const THREAD_TOOLS = /[\\/]claude[\\/]glm-mcp[\\/]/.test(SERVER_PATH) ? ["glm_thread"] : [];
+
 try {
-  // (1) Default env (GLM_DELEGATE off) -> 3 tools; glm_delegate is hidden.
-  await runSmoke({}, ["glm_agent", "glm_recommend", "glm_status"], "default");
+  // (1) Default env (GLM_DELEGATE off) -> glm_delegate is hidden.
+  const base = ["glm_agent", ...THREAD_TOOLS, "glm_recommend", "glm_status"];
+  await runSmoke({}, base, "default");
 
-  // (2) GLM_DELEGATE=on -> 4 tools; glm_delegate is exposed.
-  await runSmoke({ GLM_DELEGATE: "on" }, ["glm_delegate", "glm_agent", "glm_recommend", "glm_status"], "GLM_DELEGATE=on");
+  // (2) GLM_DELEGATE=on -> glm_delegate is exposed.
+  await runSmoke({ GLM_DELEGATE: "on" }, ["glm_delegate", ...base], "GLM_DELEGATE=on");
 
-  console.log("SMOKE PASS — default: 3 tools (delegate hidden); GLM_DELEGATE=on: 4 tools.");
+  console.log(`SMOKE PASS — default: ${base.length} tools (delegate hidden); GLM_DELEGATE=on: ${base.length + 1} tools.`);
   process.exit(0);
 } catch (e) {
   console.error("SMOKE FAIL — " + (e && e.message ? e.message : e));
