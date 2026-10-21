@@ -71,6 +71,8 @@ export const USE_HAIKU = boolEnv("GLM_USE_HAIKU", false);
 // overrides). LOWER GLM_COST_BIAS (e.g. 1.5) if you want Opus to handle more of the hard tasks
 // (debugging, architecture, security, big refactors); set 0 to decide on capability alone.
 const COST_BIAS = numEnv("GLM_COST_BIAS", 7);
+// GLM-5.3 has a 1M-token context window (docs.z.ai/guides/llm/glm-5.3); leave headroom for output.
+const CONTEXT_LIMIT = numEnv("GLM_CONTEXT_LIMIT", 800000);
 
 // --- Output token policy ---------------------------------------------------
 // max_tokens is a CEILING, not a target: GLM stops when done and you're billed for
@@ -152,7 +154,7 @@ export function resolveModel(requested, date = new Date(), complexity = "medium"
 
 /** Estimate USD cost for a call given a model and token counts. */
 export function estimateCost(model, inputTokens, outputTokens, date = new Date()) {
-  const base = RATES[model] || RATES["glm-4.7"];
+  const base = RATES[model] || RATES[model.replace(/\[.*?\]/, "")] || RATES["glm-5.3"];
   const mult = model.startsWith("glm-5") ? peakMultiplier(date) : 1; // 4.x = no multiplier
   const usd =
     ((inputTokens / 1e6) * base.in + (outputTokens / 1e6) * base.out) * mult;
@@ -210,9 +212,9 @@ export function recommend(opts = {}, date = new Date()) {
       "Tool-heavy dependent agentic loop: GLM plans-then-acts and depends on reasoning-state passthrough, so it drifts/loops across many dependent tool calls; Opus interleaves thinking with tool use. (One-shot/short independent tool calls are fine on GLM.)",
     ]);
   }
-  if (inputTokens > 128000) {
+  if (inputTokens > CONTEXT_LIMIT) {
     return done("opus", null, 0.8, [
-      `Large context (~${Math.round(inputTokens / 1000)}K tokens): GLM degrades well before its advertised limit (~100K usable); use Opus, or glm-5.2[1m] for pure retrieval/extraction only.`,
+      `Large context (~${Math.round(inputTokens / 1000)}K tokens) exceeds GLM_CONTEXT_LIMIT (${Math.round(CONTEXT_LIMIT / 1000)}K); GLM-5.3's window is 1M tokens, so split the task or use Opus.`,
     ]);
   }
   if (steps > 20 || (longHorizon && complexity === "high")) {
