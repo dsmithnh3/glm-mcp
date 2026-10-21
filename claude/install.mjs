@@ -41,7 +41,7 @@ cpSync(join(SELF, "glm-mcp"), join(CLAUDE, "glm-mcp"), {
   recursive: true,
   filter: (src) => {
     const base = src.split(/[\\/]/).pop();
-    return base !== "node_modules" && base !== ".env" && base !== "threads" && base !== "usage.jsonl";
+    return base !== "node_modules" && base !== ".env" && base !== "threads" && base !== "usage.jsonl" && base !== "test";
   },
 });
 // Docs the global CLAUDE.md policy points at.
@@ -85,8 +85,12 @@ log("  agents/glm.md, hooks/glm_subagent_router.mjs");
 // 4b. Optional full-GLM launcher (`glm-code`) — runs the whole session on GLM (~100% GLM, no Opus).
 try {
   copyFileSync(join(SELF, "glm-code.mjs"), join(CLAUDE, "glm-code.mjs"));
-  writeFileSync(join(CLAUDE, "glm-code.cmd"), '@echo off\r\nnode "%~dp0glm-code.mjs" %*\r\n');
-  writeFileSync(join(CLAUDE, "glm-code"), '#!/bin/sh\nexec node "$(dirname "$0")/glm-code.mjs" "$@"\n');
+  if (process.platform === "win32") {
+    writeFileSync(join(CLAUDE, "glm-code.cmd"), '@echo off\r\nnode "%~dp0glm-code.mjs" %*\r\n');
+  } else {
+    writeFileSync(join(CLAUDE, "glm-code"), '#!/bin/sh\nexec node "$(dirname "$0")/glm-code.mjs" "$@"\n', { mode: 0o755 });
+    chmodSync(join(CLAUDE, "glm-code"), 0o755);
+  }
   log("  glm-code launcher (full-GLM mode) -> run: node ~/.claude/glm-code.mjs");
 } catch {}
 

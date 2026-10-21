@@ -92,7 +92,7 @@ server.registerTool(
       model: z
         .string()
         .optional()
-        .describe("Model id or 'auto' (default). e.g. glm-5.2, glm-4.7, glm-4.5-air. 'auto' picks peak-aware."),
+        .describe("Model id or 'auto' (default). e.g. glm-5.3, glm-5.3-flash. 'auto' (default) is glm-5.3."),
       system: z.string().optional().describe("Optional system prompt to steer GLM's role/format."),
       thinking: z.boolean().optional().describe("Ignored: GLM-5.3 always reasons, at GLM_EFFORT (default max)."),
       max_tokens: z.union([z.literal("auto"), z.number().int().min(256).max(131072)]).optional().describe("'auto' (default): uncapped/generous — you (the orchestrating agent) decide. Pass a number (256–131072) to cap this call. (GLM_CAP=on enforces a hard limit regardless.)"),

@@ -66,37 +66,29 @@ silent, cascading, or expensive (migrations, security, review, perf).
 
 ## Conditional overrides (force Opus regardless of task type)
 - **Vision** (images/screenshots/GUI/computer-use) → Opus (GLM text endpoint has no vision).
-- **Input > ~128K tokens** → Opus (GLM degrades past ~100K despite 1M advertised); use
-  `glm-5.2[1m]` only for pure retrieval/extraction.
+- **Input > `GLM_CONTEXT_LIMIT`** (default 800K tokens) → split the task or use Opus. GLM-5.3 has a
+  1M-token window; the old ~128K limit applied to earlier GLM models.
 - **> 20 dependent steps / sustained single goal** → Opus (GLM goal-drift).
 - **Unfamiliar / niche / post-cutoff API** → −2: paste authoritative docs into the prompt, or Opus.
 - **Chinese / bilingual** → +1 toward GLM (genuine strength).
 
 **Complexity adjusts the call:** `low` nudges toward GLM, `high` nudges toward Opus.
 
-## Cost-timing rule (the "use GLM less at peak" requirement)
-- **Peak window:** ~**14:00–18:00 China time (UTC+8)** ≈ 02:00–06:00 US Eastern.
-- Flagship **GLM-5.2 costs ~3× at peak, ~2× off-peak** (1× off-peak under a promo through ~Sep 2026).
-- **Default `model: "auto"` is GLM-5.2 in both windows.** Since GLM-5.2 carries the ~3× peak
-  surcharge, the router **routes less work to GLM during peak** (a peak penalty scaled by the
-  multiplier) instead of switching models — only stronger-fit tasks go to GLM at peak.
-- GLM-4.7 carries no multiplier and stays available as a cheaper option: set `GLM_PEAK_MODEL=glm-4.7`
-  if you'd rather switch to a no-surcharge model at peak instead of routing less.
-- Western working hours fall in GLM off-peak → GLM is *most* attractive during your normal day.
+## Cost-timing rule
+- **Peak window:** ~**14:00–18:00 China time (UTC+8)** ≈ 02:00–06:00 US Eastern, so your normal
+  working day is off-peak.
+- GLM-5.x flagships cost more at peak. The router sends less work to GLM during peak instead of
+  switching models.
 
 ## Model picks
 | Use | Model |
 |---|---|
-| Off-peak default | `glm-5.2` |
-| Peak default | `glm-5.2` (router sends less to GLM at peak due to ~3× cost) |
-| No-surcharge alternative for peak | `glm-4.7` (set `GLM_PEAK_MODEL=glm-4.7`) |
-| Cheapest / trivial work | `glm-4.5-air` |
-| Huge context (>200K) | `glm-5.2[1m]` |
+| Everything (default for every `auto` pick) | `glm-5.3`, max reasoning effort |
+| Override | `GLM_MODEL`, or comma lists in `GLM_OFFPEAK_MODEL` / `GLM_PEAK_MODEL` / `GLM_CHEAP_MODEL` |
 
-> `GLM_OFFPEAK_MODEL` / `GLM_PEAK_MODEL` each accept a **comma-separated list** (e.g.
-> `glm-5.2,glm-5-turbo`); the router auto-picks one — most capable for hard tasks, cheapest for
-> easy/peak ones. Put a no-surcharge model in the peak list (e.g. `glm-5.2,glm-4.7`) and it's
-> preferred at peak, so GLM stays fine to use during the surcharge window.
+GLM-5.3 always reasons; effort is `low` / `high` / `max` (`GLM_EFFORT`, default `max`). On the
+GLM Coding Plan, older ids such as `glm-5.2` and `glm-4.7` route to GLM-5.3 anyway. The figures
+above this section that mention older models are kept as research history.
 
 ## Escalation contract
 If GLM's output is wrong, low-quality, or it refuses: retry once with a sharper prompt,

@@ -19,7 +19,7 @@ console.log(
   JSON.stringify(recommend({ taskType: "architecture", complexity: "high" }))
 );
 console.log("recommend(sensitive):", JSON.stringify(recommend({ sensitive: true })));
-console.log("est cost glm-5.2 (1k in / 2k out):", "$" + estimateCost("glm-5.2", 1000, 2000));
+console.log("est cost glm-5.3 (1k in / 2k out):", "$" + estimateCost("glm-5.3", 1000, 2000));
 
 if (!config.hasKey) {
   console.log("\nNo API key -> skipping live call. Offline checks passed.");
