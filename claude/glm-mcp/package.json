@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/index.js",
     "smoke": "node src/smoke.js",
-    "test": "node --test test/"
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
