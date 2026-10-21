@@ -14,6 +14,9 @@ const REPO = join(SANDBOX, "repo");
 process.env.GLM_GUARD_HOME = FAKE_HOME;
 process.env.GLM_THREADS_DIR = join(SANDBOX, "threads");
 process.env.GLM_API_KEY = "test-not-used";
+// Ledger: glmClient resolves GLM_USAGE_LOG at module load, so point it at a temp file BEFORE any
+// src import — tests must never append to the real claude/glm-mcp/usage.jsonl.
+process.env.GLM_USAGE_LOG = join(SANDBOX, "usage.jsonl");
 
 // A fake home with one global Bash guard (exit 2 on "git reset --hard"), and a repo whose own
 // settings add a JSON-deny guard (on "db push") and a catch-all telemetry hook that must be skipped.
@@ -54,7 +57,7 @@ test("credential paths are refused, ordinary ones are not", () => {
 });
 
 test("credential and env-dump commands are refused, ordinary ones are not", () => {
-  for (const c of ["cat .env", "cat ./.env.local", "printenv", "env | grep KEY", "cat ~/.ssh/id_rsa", "security find-generic-password -s x"]) {
+  for (const c of ["cat .env", "cat ./.env.local", "wc -c .env", "printenv", "env | grep KEY", "cat ~/.ssh/id_rsa", "security find-generic-password -s x"]) {
     assert.equal(guards.deniedCommand(c), true, c);
   }
   for (const c of ["cp .env.example .env.example.bak", "pnpm test", "node --env-file-if-exists=x app.js", "git status", "codegraph explore \"createApiStore\""]) {
@@ -198,4 +201,38 @@ test("every GLM request goes out as glm-5.3 with thinking on and max effort", as
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test("ledger records est_cost_usd per line; usageSummary sums it and counts costed lines", async () => {
+  const { logUsage, usageSummary } = await import("../src/glmClient.js");
+  const { estimateCost } = await import("../src/router.js");
+  const ledger = process.env.GLM_USAGE_LOG;
+  // One pre-existing line in the OLD format (no est_cost_usd) — it must not break the summary.
+  writeFileSync(
+    ledger,
+    JSON.stringify({ ts: "2026-10-20T00:00:00.000Z", model: "glm-5.3", input_tokens: 1000, output_tokens: 500 }) + "\n"
+  );
+  const inTok = 12000;
+  const outTok = 3400;
+  // Fixed date (11:00 China -> off-peak, ×2 multiplier) so est_cost_usd is deterministic.
+  const when = new Date("2026-10-21T03:00:00Z");
+  logUsage("glm-5.3", { input_tokens: inTok, output_tokens: outTok }, when);
+
+  const lines = readFileSync(ledger, "utf8").trim().split(/\r?\n/);
+  assert.equal(lines.length, 2);
+  const line = JSON.parse(lines[1]);
+  assert.equal(line.model, "glm-5.3");
+  assert.equal(line.input_tokens, inTok);
+  assert.equal(line.output_tokens, outTok);
+  assert.ok(Number.isFinite(line.est_cost_usd), "ledger line carries est_cost_usd");
+  assert.equal(line.est_cost_usd, estimateCost("glm-5.3", inTok, outTok, when));
+
+  const s = usageSummary();
+  assert.equal(s.log_path, ledger);
+  assert.equal(s.calls, 2);
+  assert.equal(s.input_tokens, 1000 + inTok);
+  assert.equal(s.output_tokens, 500 + outTok);
+  assert.equal(s.total_tokens, 1000 + 500 + inTok + outTok);
+  assert.equal(s.lines_with_cost, 1, "only the line that carried the field is counted");
+  assert.equal(s.est_cost_usd, line.est_cost_usd, "sum includes only the costed line, rounded to 6 dp");
 });

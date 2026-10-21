@@ -10,14 +10,18 @@ synthesized from the three research docs in [`docs/research/`](research/).
 **Default to GLM for the routine ~80%; escalate to Opus for the expensive-if-wrong minority.**
 
 ## Why cost makes GLM the default (not just a "cheap option")
-GLM is **~10× cheaper** than Opus, and **still ~3–4× cheaper even at peak** (3× multiplier):
+GLM-5.3 — the router default — is **~2-3x cheaper than Opus per token (off-peak; less at peak)**:
+about **1.8× in / 2.8× out** off-peak (×2 multiplier) and **1.2× in / 1.9× out** at peak (×3).
+Older, cheaper models widen the gap (kept as labelled history; the router defaults to GLM-5.3):
 
-| Model | ~$/1M in/out | vs Opus |
+| Model | ~$/1M in/out | vs Opus (in / out) |
 |---|---|---|
-| Opus | 5 / 25 | 1× |
-| GLM-5.2 off-peak | 0.6 / 2.2 | ~10× cheaper |
+| Opus | 5 / 25 | 1× / 1× |
+| GLM-5.3 off-peak (×2) | 2.8 / 8.8 | ~1.8× / ~2.8× cheaper |
+| GLM-5.3 at peak (×3) | 4.2 / 13.2 | ~1.2× / ~1.9× cheaper |
+| GLM-5.2 off-peak | 0.6 / 2.2 | ~8–11× cheaper |
 | GLM-5.2 at peak | 1.8 / 6.6 | ~3–4× cheaper |
-| GLM-4.7 (no multiplier) | 0.4 / 1.75 | ~12× cheaper |
+| GLM-4.7 (no multiplier) | 0.4 / 1.75 | ~12–14× cheaper |
 
 So the router applies a standing **cost bias toward GLM** (`GLM_COST_BIAS`, default `7` →
 GLM carries ~98–100% of tasks; lower it to hand more hard tasks to Opus):

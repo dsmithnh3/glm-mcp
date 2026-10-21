@@ -11,19 +11,26 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { estimateCost } from "./router.js";
 
 // Local usage ledger: every GLM call is appended here so you have independent, on-disk
-// proof of GLM usage (model + tokens), regardless of what the z.ai dashboard shows.
-const USAGE_LOG = join(dirname(fileURLToPath(import.meta.url)), "..", "usage.jsonl");
-function logUsage(model, usage) {
+// proof of GLM usage (model + tokens + estimated cost), regardless of what the z.ai dashboard
+// shows. GLM_USAGE_LOG overrides the location (tests point it at a temp file).
+const USAGE_LOG = process.env.GLM_USAGE_LOG || join(dirname(fileURLToPath(import.meta.url)), "..", "usage.jsonl");
+
+/** Append one GLM call to the ledger with its estimated USD cost (estimateCost). */
+export function logUsage(model, usage, date = new Date()) {
+  const inputTokens = usage.input_tokens || 0;
+  const outputTokens = usage.output_tokens || 0;
   try {
     appendFileSync(
       USAGE_LOG,
       JSON.stringify({
         ts: new Date().toISOString(),
         model,
-        input_tokens: usage.input_tokens || 0,
-        output_tokens: usage.output_tokens || 0,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        est_cost_usd: estimateCost(model, inputTokens, outputTokens, date),
       }) + "\n"
     );
   } catch {}
@@ -31,7 +38,11 @@ function logUsage(model, usage) {
 
 /** Cumulative GLM usage from the local ledger — independent proof of GLM token spend. */
 export function usageSummary() {
-  const out = { calls: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0, by_model: {}, log_path: USAGE_LOG };
+  const out = {
+    calls: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0,
+    est_cost_usd: 0, lines_with_cost: 0,
+    by_model: {}, log_path: USAGE_LOG,
+  };
   try {
     for (const l of readFileSync(USAGE_LOG, "utf8").trim().split(/\r?\n/)) {
       if (!l) continue;
@@ -39,9 +50,14 @@ export function usageSummary() {
       out.calls++;
       out.input_tokens += e.input_tokens || 0;
       out.output_tokens += e.output_tokens || 0;
+      if (typeof e.est_cost_usd === "number" && Number.isFinite(e.est_cost_usd)) {
+        out.est_cost_usd += e.est_cost_usd;
+        out.lines_with_cost++; // older lines carry no est_cost_usd and are not counted
+      }
       out.by_model[e.model] = (out.by_model[e.model] || 0) + 1;
     }
     out.total_tokens = out.input_tokens + out.output_tokens;
+    out.est_cost_usd = Math.round(out.est_cost_usd * 1e6) / 1e6;
   } catch {}
   return out;
 }

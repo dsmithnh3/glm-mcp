@@ -13,10 +13,10 @@
 > **GitHub Copilot** in VS Code instead? → **[`glm-mcp-copilot`](../copilot/)** — the same GLM MCP
 > server wired into Copilot's agent mode.
 
-Add **GLM** (Zhipu / Z.ai) to Claude Code as a **cheap, full-capability subagent** (~10× cheaper
-than Opus), with **automatic per-task routing** between Opus and GLM. Your main agent stays on
-Opus; GLM does the well-specified, cost-sensitive work — and can read, write, edit, and run your
-files directly. One command to install.
+Add **GLM** (Zhipu / Z.ai) to Claude Code as a **cheap, full-capability subagent** (~2-3x cheaper
+than Opus per token, off-peak — less at peak), with **automatic per-task routing** between Opus
+and GLM. Your main agent stays on Opus; GLM does the well-specified, cost-sensitive work — and
+can read, write, edit, and run your files directly. One command to install.
 
 > ✅ **Works in the Claude Code app on a subscription-based Claude.** Your main agent runs on the
 > Claude you already pay for through the **Claude Code app** (Pro / Max / Team subscription) —
@@ -64,7 +64,7 @@ node install.mjs --key YOUR_ZAI_API_KEY
 - **A Z.ai / Zhipu API key with GLM Coding Plan access** — get one at **<https://z.ai>**.
   ⚠️ **It must be on the GLM Coding Plan** (the coding-plan subscription); a generic or free
   key won't have access to the coding models this uses. This is the **only paid key required**,
-  and GLM is ~10× cheaper than Opus.
+  and GLM is ~2-3x cheaper than Opus per token (off-peak; less at peak).
 - Git (optional, but enables `glm_agent`'s one-command revert)
 
 ---
@@ -111,7 +111,7 @@ You ask for something
 The routing rules live in **`glm-mcp/src/router.js`** and the **hook** — not in always-on context —
 so they cost nothing until a subagent is actually spawned.
 
-**Routing in one line:** GLM is the default (it's ~10× cheaper); Opus is the exception for work
+**Routing in one line:** GLM is the default (it's ~2-3x cheaper per token); Opus is the exception for work
 where being wrong is expensive — subtle debugging, architecture, large refactors, security,
 tool-heavy dependent loops, huge context, vision, or anything you mark sensitive.
 
@@ -235,7 +235,7 @@ node uninstall.mjs --purge  # also delete ~/.claude/glm-mcp (and its .env)
 | Server fails to start | `cd ~/.claude/glm-mcp && npm run smoke` to see the real error. |
 | `Too much concurrency` | Expected under load; it auto-retries. Don't fan out parallel GLM calls. |
 | Hook not firing | Check `~/.claude/settings.json` has a `PreToolUse` `Task` matcher pointing at `glm_subagent_router.mjs`. |
-| "Is GLM actually being used?" | Every GLM call is logged to `~/.claude/glm-mcp/usage.jsonl` (model + tokens). `cat` it, or run `glm_status` for the cumulative total — independent, on-disk proof that doesn't depend on the z.ai dashboard. If it's empty, GLM wasn't called (the work ran on Claude). |
+| "Is GLM actually being used?" | Every GLM call is logged to `~/.claude/glm-mcp/usage.jsonl` (model, input_tokens, output_tokens, est_cost_usd). `cat` it, or run `glm_status` for the cumulative total incl. `est_cost_usd` and `lines_with_cost` (older ledger lines carry no cost) — independent, on-disk proof that doesn't depend on the z.ai dashboard. If it's empty, GLM wasn't called (the work ran on Claude). |
 
 More background and the research behind the routing rules: see [`docs/`](docs/).
 

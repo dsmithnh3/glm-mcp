@@ -64,12 +64,13 @@ function boolEnv(name, fallback) {
 // writing would spend Claude tokens). Set GLM_USE_HAIKU=on in .env to allow the subagent path.
 export const USE_HAIKU = boolEnv("GLM_USE_HAIKU", false);
 
-// GLM is ~10x cheaper than Opus, so by default GLM carries the overwhelming majority of the
-// burden: with GLM_COST_BIAS=7, ~98-100% of tasks route to GLM (measured across all task types,
-// peak and off-peak). Opus is used only for what GLM genuinely can't/shouldn't do -- vision,
-// parallel fan-out, >128K context, sensitive code, and heavy dependent tool-loops (the hard
-// overrides). LOWER GLM_COST_BIAS (e.g. 1.5) if you want Opus to handle more of the hard tasks
-// (debugging, architecture, security, big refactors); set 0 to decide on capability alone.
+// GLM is ~2-3x cheaper than Opus per token (off-peak; less at peak), so by default GLM carries
+// the overwhelming majority of the burden: with GLM_COST_BIAS=7, ~98-100% of tasks route to GLM
+// (measured across all task types, peak and off-peak). Opus is used only for what GLM genuinely
+// can't/shouldn't do -- vision, parallel fan-out, >128K context, sensitive code, and heavy
+// dependent tool-loops (the hard overrides). LOWER GLM_COST_BIAS (e.g. 1.5) if you want Opus
+// to handle more of the hard tasks (debugging, architecture, security, big refactors); set 0
+// to decide on capability alone.
 const COST_BIAS = numEnv("GLM_COST_BIAS", 7);
 // GLM-5.3 has a 1M-token context window (docs.z.ai/guides/llm/glm-5.3); leave headroom for output.
 const CONTEXT_LIMIT = numEnv("GLM_CONTEXT_LIMIT", 800000);
@@ -245,11 +246,11 @@ export function recommend(opts = {}, date = new Date()) {
   let score = TASK_FIT[taskType] ?? 0;
   reasons.push(`Task type "${taskType}" capability fit ${score >= 0 ? "+" : ""}${score}.`);
 
-  // Cost is a first-class factor: GLM is ~10x cheaper, so bias toward it. The
-  // capability penalties above are what claw hard/risky work back to Opus.
+  // Cost is a first-class factor: GLM is ~2-3x cheaper per token (off-peak; less at peak), so
+  // bias toward it. The capability penalties above are what claw hard/risky work back to Opus.
   score += COST_BIAS;
   reasons.push(
-    `GLM ~10x cheaper than Opus (still cheaper even at peak) -> cost bias +${COST_BIAS} toward GLM; Opus is the "pay up for quality" exception.`
+    `GLM ~2-3x cheaper than Opus per token (off-peak; less at peak) -> cost bias +${COST_BIAS} toward GLM; Opus is the "pay up for quality" exception.`
   );
 
   // Soft signals from the research.

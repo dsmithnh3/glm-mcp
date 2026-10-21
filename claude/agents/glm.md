@@ -3,7 +3,7 @@ name: glm
 description: >
   Cost-saving delegate backed by the GLM model (Zhipu/Z.ai). It does real repo work — read,
   write, edit, run commands — but ALWAYS through GLM (via mcp__glm__glm_agent), so the work runs
-  on GLM tokens (~10x cheaper than Opus), NOT Claude. Use PROACTIVELY for cheap, well-specified,
+  on GLM tokens (~2-3x cheaper than Opus per token, off-peak; less at peak), NOT Claude. Use PROACTIVELY for cheap, well-specified,
   self-contained subtasks: frontend/UI, boilerplate, scaffolding, CRUD, local refactors, docs,
   summarization, algorithmic codegen, tests, config. NOT for security-sensitive/proprietary code,
   subtle long debugging, large multi-step refactors, dependent agentic tool-loops, or work needing

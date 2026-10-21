@@ -28,7 +28,7 @@ user's MCP configuration with `npx` — no clone, build, or global install requi
 
 The server answers the MCP handshake immediately — `initialize` then `tools/list` returns four tools:
 
-- `glm_agent` — run GLM as a file-editing coding agent in a repo (read/write/edit/run), ~10x cheaper than the default model
+- `glm_agent` — run GLM as a file-editing coding agent in a repo (read/write/edit/run), ~2-3x cheaper per token than the default model
 - `glm_delegate` — text-in/text-out subtask on GLM
 - `glm_recommend` — free advisory: GLM vs the default model
 - `glm_status` — free: config, peak window, usage ledger
