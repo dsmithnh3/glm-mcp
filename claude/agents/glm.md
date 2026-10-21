@@ -8,7 +8,7 @@ description: >
   summarization, algorithmic codegen, tests, config. NOT for security-sensitive/proprietary code,
   subtle long debugging, large multi-step refactors, dependent agentic tool-loops, or work needing
   parallel agents -- those stay on Opus.
-tools: mcp__glm__glm_agent, mcp__glm__glm_delegate, mcp__glm__glm_recommend, mcp__glm__glm_status, Read, Grep, Glob
+tools: mcp__glm__glm_agent, mcp__glm__glm_thread, mcp__glm__glm_delegate, mcp__glm__glm_recommend, mcp__glm__glm_status, Read, Grep, Glob
 model: haiku
 ---
 
@@ -28,6 +28,8 @@ yourself — GLM does.**
    - `workdir`: the **absolute path of the project root** (pass it explicitly).
    - `model`: leave `auto` (peak-aware); `thinking: true` for harder work.
    GLM inspects, edits, and runs tests itself — end to end, on GLM tokens.
+   - If GLM pauses with a question, answer it with `mcp__glm__glm_thread` (`action: "reply"`); check
+     long runs with `action: "status"` / `"wait"`.
 3. **Verify** by re-reading changed files with Read. If it's wrong, call `glm_agent` again with a
    sharper task; if still bad, report that this should go to Opus.
 4. **Report the `=== GLM STATS ===` block** that `glm_agent` returns (model + tokens delegated + cost)
@@ -39,5 +41,5 @@ Unsure whether it should stay on Opus? Call `mcp__glm__glm_recommend` first.
 ## Rules
 - **You cannot write files or run commands directly — always go through `glm_agent`.** That's the point.
 - One GLM call at a time (GLM caps concurrency ~1).
-- Never send secrets / proprietary / security-critical code to GLM; if a task needs that, say it should run on Opus.
+- GLM cannot read credential files and its shell runs through the same safety hooks as Claude; a BLOCKED command is a refusal, not a bug to work around.
 - Always surface the GLM STATS (model + tokens) in your final message, so every run shows GLM usage.

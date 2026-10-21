@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // glm_subagent_router.mjs
-// PreToolUse hook for the Task (subagent) tool. Fires ONLY when a subagent is
+// PreToolUse hook for the subagent tool ("Agent"; "Task" in older Claude Code builds). Fires ONLY when a subagent is
 // about to be spawned -> zero token cost the rest of the time.
 //
 // It infers the task profile from the Task description/prompt, runs the shared
@@ -175,12 +175,15 @@ function inferProfile(text) {
           `GLM-SUITABLE repo task (inferred: ${profile.taskType}, confidence ${rec.confidence}). ` +
           `➤ CALL mcp__glm__glm_agent DIRECTLY with workdir="${cwd}" (model ${rec.model}) — the only path that ` +
           `actually spends GLM tokens (GLM reads/edits the files and runs tests itself). ${haikuClause} ` +
-          `For oversight, pass dry_run:true first, then apply. Why: ${rec.reasons[rec.reasons.length - 1] || rec.reasons[0] || ""}`;
+          `Use a git worktree as workdir; background:true for long work. Answer GLM's questions with glm_thread reply, ` +
+          `have a second GLM thread review the diff, then review the full diff yourself. ` +
+          `Why: ${rec.reasons[rec.reasons.length - 1] || rec.reasons[0] || ""}`;
       } else {
         // Pure generation -> draft via glm_delegate (spends GLM tokens); not inline (Claude tokens).
+        const delegateOn = /^(1|on|true|yes)$/i.test(process.env.GLM_DELEGATE || "off");
         verdict =
           `GLM-SUITABLE generation (inferred: ${profile.taskType}, confidence ${rec.confidence}). ` +
-          `➤ CALL mcp__glm__glm_delegate (model ${rec.model}) to generate this — that spends GLM tokens. ` +
+          `➤ CALL ${delegateOn ? "mcp__glm__glm_delegate" : "mcp__glm__glm_agent (no file edits needed)"} (model ${rec.model}) to generate this — that spends GLM tokens. ` +
           `Writing it yourself instead spends Claude tokens and zero GLM. Then place/verify the result. ` +
           `Why: ${rec.reasons[rec.reasons.length - 1] || rec.reasons[0] || ""}`;
       }
@@ -191,10 +194,9 @@ function inferProfile(text) {
     // Compact reference (injected only on subagent spawn -> pay-per-use). Kept short to
     // minimize the Claude tokens spent reading it.
     const RULES =
-      "Rule: GLM (~10x cheaper) = default for safe-to-be-wrong work; Opus only when being wrong is " +
-      "costly. Always Opus: sensitive/secret code, vision, parallel agents, >128K context, heavy " +
-      "dependent tool-loops. To spend GLM (not Claude) tokens, call mcp__glm__glm_agent directly " +
-      "(files) or mcp__glm__glm_delegate (text); doing it inline or via the Haiku subagent = Claude tokens.";
+      "Rule: Claude orchestrates and gives the final review; GLM (~10x cheaper) does the heavy work and a first-pass " +
+      "self-review. Keep on Claude: vision, many parallel agents, the final review, owner decisions. GLM's shell runs " +
+      "through your own safety hooks and cannot read credentials. Protocol: ~/.claude/glm-mcp/docs/ORCHESTRATION.md.";
 
     const out = {
       hookSpecificOutput: {

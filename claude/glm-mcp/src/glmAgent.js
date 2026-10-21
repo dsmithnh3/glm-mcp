@@ -1,16 +1,22 @@
 // glmAgent.js
-// Runs GLM as a real tool-using agent against the local filesystem, with oversight
-// built in so Opus can regulate and see exactly what GLM did:
+// Runs GLM as a real tool-using agent against the local filesystem, with oversight built in so
+// the orchestrator (Claude) can regulate, converse with, and see exactly what GLM did:
 //   - returns a unified DIFF of every change (isolated to the files GLM touched)
-//   - returns an ACTION LOG of every read/write/edit/bash
-//   - records a non-invasive git checkpoint + revert hint (when in a git repo)
-//   - supports dry_run: GLM proposes changes to an in-memory overlay and writes NOTHING,
-//     so Opus can approve the diff before a real apply pass.
+//   - returns an ACTION LOG of every read/write/edit/bash, including refused ones
+//   - records a non-invasive git checkpoint + a per-file revert hint (when in a git repo)
+//   - supports dry_run: GLM proposes changes to an in-memory overlay and writes NOTHING
+//   - injects the repo's AGENTS.md / CLAUDE.md and a CodeGraph-first working method
+//   - passes every shell command through the orchestrator's own PreToolUse Bash hooks
+//   - refuses credential paths and strips API keys from the shell environment
+//   - keeps a persistent thread: GLM can ask_orchestrator a question and pause; the
+//     orchestrator answers by continuing the thread (see threads.js)
 
 import { readFileSync, writeFileSync, readdirSync, statSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname, relative, isAbsolute, join } from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { glmMessage } from "./glmClient.js";
+import { deniedPath, deniedCommand, scrubbedEnv, guardBash, loadRepoRules } from "./guards.js";
+import { newThread, loadThread, saveThread } from "./threads.js";
 
 const MAX_ITERS = parseInt(process.env.GLM_AGENT_MAX_ITERS || "30", 10);
 const BASH_TIMEOUT = parseInt(process.env.GLM_AGENT_BASH_TIMEOUT_MS || "120000", 10);
@@ -28,8 +34,10 @@ const TOOLS = [
     input_schema: { type: "object", properties: { path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" } }, required: ["path", "old_string", "new_string"] } },
   { name: "list_dir", description: "List entries in a directory (relative or absolute). Defaults to '.'.",
     input_schema: { type: "object", properties: { path: { type: "string" } } } },
-  { name: "run_bash", description: "Run a shell command in the working dir; returns stdout+stderr. Disabled in dry_run.",
+  { name: "run_bash", description: "Run a shell command in the working dir; returns stdout+stderr and the exit code. Disabled in dry_run. Commands pass through the orchestrator's safety hooks; a refused command returns BLOCKED with the reason.",
     input_schema: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } },
+  { name: "ask_orchestrator", description: "Pause and ask the orchestrating agent one precise question: when blocked (including a BLOCKED command you need run or approved), when a decision is not yours to make, or when the brief is ambiguous. The answer arrives when the orchestrator continues this thread.",
+    input_schema: { type: "object", properties: { question: { type: "string" } }, required: ["question"] } },
 ];
 
 function safeResolve(root, p) {
@@ -76,57 +84,89 @@ function unifiedDiff(oldStr, newStr, path) {
 
 function gitCheckpoint(root) {
   try {
-    execSync(`git -C "${root}" rev-parse --is-inside-work-tree`, { stdio: "ignore" });
+    execFileSync("git", ["-C", root, "rev-parse", "--is-inside-work-tree"], { stdio: "ignore" });
   } catch {
     return { isRepo: false, baseline: null, revertHint: "Not a git repo — review the diff below; revert manually if needed." };
   }
   let baseline = "";
-  try { baseline = execSync(`git -C "${root}" stash create`, { encoding: "utf8" }).trim(); } catch {}
+  try { baseline = execFileSync("git", ["-C", root, "stash", "create"], { encoding: "utf8" }).trim(); } catch {}
   if (!baseline) {
-    try { baseline = execSync(`git -C "${root}" rev-parse HEAD`, { encoding: "utf8" }).trim(); } catch {}
+    try { baseline = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(); } catch {}
   }
   return {
     isRepo: true,
     baseline,
     revertHint: baseline
-      ? `To revert GLM's changes: \`git -C "${root}" checkout ${baseline} -- .\` then \`git -C "${root}" clean -fd\` to drop any new files. (Baseline is a non-invasive snapshot; your working tree was not modified by the checkpoint.)`
-      : "Git repo detected but baseline capture failed; use `git diff` / `git stash` to review and revert.",
+      ? `Baseline ${baseline}. To revert only GLM's edits: \`git -C "${root}" checkout ${baseline} -- <changed files>\`, and delete the files marked (new file). Never run \`git clean\` in a shared checkout.`
+      : "Git repo detected but baseline capture failed; use `git diff` to review and revert.",
   };
 }
 
-export async function runGlmAgent({ model, task, context, workdir, maxTokens = 131072, thinking = false, dryRun = false, onProgress, signal }) {
-  const root = workdir && workdir.trim() ? resolve(workdir) : process.cwd();
+function systemPrompt(root, dryRun, repo) {
+  return (
+    `You are a capable coding agent working directly in a local repository for an orchestrating agent (Claude) that plans the work and reviews everything you change.\n` +
+    `Working directory: ${root}\n` +
+    (dryRun
+      ? `DRY RUN: write_file/edit_file are STAGED, not written to disk, and run_bash is disabled. Produce the complete set of intended changes, then stop and summarize them.\n`
+      : `Make the changes yourself with the tools, and run tests/builds to verify them.\n`) +
+    `\nHow to work:\n` +
+    (repo.indexed
+      ? `- This repository is indexed by CodeGraph. BEFORE grep/find or reading whole files, run \`codegraph explore "<symbol names or a question>"\` via run_bash: it returns the relevant symbols' line-numbered source, the call paths between them, and a blast-radius list of every reader. Trust it. In a git worktree it may answer from the main checkout and say so; then read the changed files directly.\n`
+      : `- If the repository has a .codegraph/ directory, run \`codegraph explore "<symbols>"\` via run_bash before grep/find.\n`) +
+    `- Before changing a value, enumerate every reader of it (CodeGraph's blast radius or a repo-wide grep) and update or check each one.\n` +
+    `- Follow the repository rules below exactly; they override your own habits.\n` +
+    `- Run the smallest relevant test first. Report exact commands with their exit codes; never trust the exit code of a piped command.\n` +
+    `- A BLOCKED command was refused by the orchestrator's safety hooks. Do not try to work around it. If the task needs it, call ask_orchestrator and explain why.\n` +
+    `- Credential files (.env, keys, tokens) are off-limits and are refused.\n` +
+    `- If the brief is ambiguous or a decision is not yours to make, call ask_orchestrator with one precise question instead of guessing.\n` +
+    `- When done, stop calling tools and reply with: files changed, how you verified (commands + exit codes), what you deliberately left out, and what the reviewer should check.\n` +
+    (repo.rules ? `\n===== REPOSITORY RULES (${repo.top}) =====\n${repo.rules}\n` : "")
+  );
+}
+
+/**
+ * Run (or continue) GLM as an agent.
+ * Pass threadId to continue an existing thread: `task` is then the orchestrator's follow-up, or
+ * its answer to the question GLM asked.
+ */
+export async function runGlmAgent({ model, task, context, workdir, threadId, title, maxTokens = 131072, thinking = false, dryRun = false, onProgress, signal, messageFn = glmMessage }) {
+  let thread = threadId ? loadThread(threadId) : null;
+  if (thread && workdir && resolve(workdir) !== thread.root) throw new Error(`thread ${threadId} belongs to ${thread.root}, not ${resolve(workdir)}`);
+  const root = thread ? thread.root : (workdir && workdir.trim() ? resolve(workdir) : process.cwd());
+  if (!thread) thread = newThread(root, title || String(task).split("\n")[0].slice(0, 100));
+  const repo = loadRepoRules(root);
   const log = [];
-  const originals = new Map(); // abs -> pre-run disk content (string|null if didn't exist)
-  const overlay = new Map(); // dry_run staging: abs -> proposed content
+  const originals = new Map();
+  const overlay = new Map();
   const checkpoint = dryRun ? { isRepo: false, baseline: null, revertHint: "dry_run: nothing written." } : gitCheckpoint(root);
+  let question = null;
 
   const recordOriginal = (abs) => {
     if (!originals.has(abs)) {
       try { originals.set(abs, readFileSync(abs, "utf8")); } catch { originals.set(abs, null); }
     }
   };
-  const readCurrent = (abs) => {
-    if (dryRun && overlay.has(abs)) return overlay.get(abs);
-    return readFileSync(abs, "utf8");
-  };
+  const readCurrent = (abs) => (dryRun && overlay.has(abs) ? overlay.get(abs) : readFileSync(abs, "utf8"));
   const writeCurrent = (abs, content) => {
     if (dryRun) { overlay.set(abs, content); return; }
     mkdirSync(dirname(abs), { recursive: true });
     writeFileSync(abs, content, "utf8");
   };
+  const refuse = (abs, what) => { log.push(`REFUSED ${what} ${abs}`); return `ERROR: ${what} of ${abs} refused: credential path. Do not retry.`; };
 
   function runTool(name, input) {
     try {
       switch (name) {
         case "read_file": {
           const abs = safeResolve(root, input.path);
+          if (deniedPath(abs)) return refuse(abs, "read");
           const txt = readCurrent(abs);
           log.push(`read ${relative(root, abs) || input.path}`);
           return txt.length > FILE_READ_CAP ? txt.slice(0, FILE_READ_CAP) + "\n…[truncated]" : txt;
         }
         case "write_file": {
           const abs = safeResolve(root, input.path);
+          if (deniedPath(abs)) return refuse(abs, "write");
           recordOriginal(abs);
           writeCurrent(abs, input.content ?? "");
           log.push(`${dryRun ? "[dry] " : ""}write ${relative(root, abs) || input.path}`);
@@ -134,33 +174,51 @@ export async function runGlmAgent({ model, task, context, workdir, maxTokens = 1
         }
         case "edit_file": {
           const abs = safeResolve(root, input.path);
+          if (deniedPath(abs)) return refuse(abs, "edit");
           let cur;
           try { cur = readCurrent(abs); } catch { return `ERROR: cannot read ${input.path} to edit.`; }
           const occ = cur.split(input.old_string).length - 1;
           if (occ === 0) return `ERROR: old_string not found in ${input.path}. Read the file and retry with an exact match.`;
           if (occ > 1) return `ERROR: old_string appears ${occ} times in ${input.path}; add surrounding lines to make it unique.`;
           recordOriginal(abs);
-          writeCurrent(abs, cur.replace(input.old_string, input.new_string));
+          writeCurrent(abs, cur.replace(input.old_string, () => input.new_string));
           log.push(`${dryRun ? "[dry] " : ""}edit ${relative(root, abs) || input.path}`);
           return `${dryRun ? "(dry_run, staged) " : ""}Edited ${input.path} (1 replacement).`;
         }
         case "list_dir": {
           const abs = safeResolve(root, input.path || ".");
+          if (deniedPath(abs)) return refuse(abs, "list");
           const entries = readdirSync(abs).map((e) => {
             try { return statSync(join(abs, e)).isDirectory() ? e + "/" : e; } catch { return e; }
           });
           return entries.join("\n") || "(empty)";
         }
         case "run_bash": {
-          if (dryRun) return `[dry_run] bash disabled. Use read_file/list_dir to inspect. (cmd was: ${input.command})`;
-          log.push(`bash: ${String(input.command).slice(0, 80)}`);
+          const cmd = String(input.command || "");
+          if (dryRun) return `[dry_run] bash disabled. Use read_file/list_dir to inspect. (cmd was: ${cmd})`;
+          if (deniedCommand(cmd)) {
+            log.push(`BLOCKED bash (credentials/env): ${cmd.slice(0, 100)}`);
+            return "BLOCKED: the command touches credentials or dumps the environment. Do not retry; use ask_orchestrator if the task needs it.";
+          }
+          const g = guardBash(cmd, root, repo.top);
+          if (g.blocked) {
+            log.push(`BLOCKED bash: ${cmd.slice(0, 100)} — ${g.reason}`);
+            return `BLOCKED by the orchestrator's safety hook: ${g.reason}. Do not work around it; use ask_orchestrator if the task needs it.`;
+          }
+          log.push(`bash: ${cmd.slice(0, 100)}`);
           let out;
           try {
-            out = execSync(input.command, { cwd: root, timeout: BASH_TIMEOUT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], shell: true });
+            out = execSync(cmd, { cwd: root, timeout: BASH_TIMEOUT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], shell: "/bin/bash", env: scrubbedEnv() });
+            out = `${out}\n[exit 0]`;
           } catch (e) {
             out = `${e.stdout || ""}${e.stderr || ""}\n[exit ${e.status ?? "?"}] ${e.message}`;
           }
-          return (out || "(no output)").slice(0, BASH_OUT_CAP);
+          return out.length > BASH_OUT_CAP ? out.slice(0, BASH_OUT_CAP) + "\n…[truncated]" : out;
+        }
+        case "ask_orchestrator": {
+          question = String(input.question || "").trim() || "(empty question)";
+          log.push(`ASK: ${question.slice(0, 100)}`);
+          return "Question sent to the orchestrator.";
         }
         default:
           return `ERROR: unknown tool ${name}`;
@@ -170,53 +228,88 @@ export async function runGlmAgent({ model, task, context, workdir, maxTokens = 1
     }
   }
 
-  const system =
-    `You are a capable coding agent operating directly on a local repository.\n` +
-    `Working directory: ${root}\n` +
-    (dryRun
-      ? `DRY RUN: your write_file/edit_file are STAGED, not written to disk, and run_bash is disabled. ` +
-        `Produce the complete set of intended changes, then stop and summarize them.\n`
-      : `Make changes yourself with the tools; run tests/builds to verify. `) +
-    `Tools: read_file, write_file, edit_file, list_dir, run_bash. When fully done, stop calling ` +
-    `tools and reply with a concise summary of what you changed and how you verified it.`;
+  const system = systemPrompt(root, dryRun, repo);
+  const userText = context ? `${task}\n\n--- CONTEXT ---\n${context}` : String(task);
+  if (thread.pendingAskId) {
+    thread.messages.push({ role: "user", content: [
+      ...(thread.pendingResults || []),
+      { type: "tool_result", tool_use_id: thread.pendingAskId, content: `Orchestrator's answer: ${userText}` },
+    ] });
+  } else if (thread.messages.length) {
+    const followUp = `Follow-up from the orchestrator:\n${userText}`;
+    const last = thread.messages[thread.messages.length - 1];
+    if (last.role === "user") {
+      // e.g. a run that hit the iteration cap ends on tool_results; keep roles alternating.
+      last.content = [...(Array.isArray(last.content) ? last.content : [{ type: "text", text: last.content }]), { type: "text", text: followUp }];
+    } else {
+      thread.messages.push({ role: "user", content: followUp });
+    }
+  } else {
+    thread.messages.push({ role: "user", content: userText });
+  }
+  thread.pendingAskId = null;
+  thread.pendingResults = null;
+  const messages = thread.messages;
 
-  const messages = [{ role: "user", content: context ? `${task}\n\n--- CONTEXT ---\n${context}` : task }];
   let lastText = "";
   const totalUsage = { input_tokens: 0, output_tokens: 0 };
   let iters = 0;
   let cancelled = false;
   const emit = (msg) => { if (onProgress) { try { onProgress(msg, iters, MAX_ITERS); } catch {} } };
 
-  for (; iters < MAX_ITERS; iters++) {
-    if (signal?.aborted) { cancelled = true; break; }
-    const baseOut = totalUsage.output_tokens;
-    emit(`iter ${iters + 1}/${MAX_ITERS} — GLM generating…`);
-    let raw, usage;
-    try {
-      ({ raw, usage } = await glmMessage({
-        model, system, messages, maxTokens, thinking, tools: TOOLS, signal,
-        onToken: (outTok, tps) => emit(`iter ${iters + 1}/${MAX_ITERS} · ${baseOut + outTok} tok · ${tps} tok/s`),
-      }));
-    } catch (e) {
-      if (e && e.cancelled) { cancelled = true; break; }
-      throw e;
+  try {
+    for (; iters < MAX_ITERS; iters++) {
+      if (signal?.aborted) { cancelled = true; break; }
+      const baseOut = totalUsage.output_tokens;
+      emit(`iter ${iters + 1}/${MAX_ITERS} — GLM generating…`);
+      let raw, usage;
+      try {
+        ({ raw, usage } = await messageFn({
+          model, system, messages, maxTokens, thinking, tools: TOOLS, signal,
+          onToken: (outTok, tps) => emit(`iter ${iters + 1}/${MAX_ITERS} · ${baseOut + outTok} tok · ${tps} tok/s`),
+        }));
+      } catch (e) {
+        if (e && e.cancelled) { cancelled = true; break; }
+        throw e;
+      }
+      totalUsage.input_tokens += usage.input_tokens || 0;
+      totalUsage.output_tokens += usage.output_tokens || 0;
+      const content = raw.content || [];
+      const textParts = content.filter((b) => b.type === "text").map((b) => b.text);
+      if (textParts.length) lastText = textParts.join("\n").trim();
+      const toolUses = content.filter((b) => b.type === "tool_use");
+      messages.push({ role: "assistant", content });
+      if (raw.stop_reason !== "tool_use" || toolUses.length === 0) break;
+      const results = [];
+      let askId = null;
+      for (const tu of toolUses) {
+        const out = String(runTool(tu.name, tu.input || {}));
+        if (tu.name === "ask_orchestrator" && !askId) { askId = tu.id; continue; }
+        results.push({ type: "tool_result", tool_use_id: tu.id, content: out });
+      }
+      if (askId) {
+        // Pause. The orchestrator's answer becomes the ask's tool_result on resume, sent together
+        // with the results of any sibling tool calls from this turn.
+        thread.pendingAskId = askId;
+        thread.pendingResults = results;
+        emit(`waiting for orchestrator: ${question}`);
+        break;
+      }
+      messages.push({ role: "user", content: results });
+      emit(`iter ${iters + 1}/${MAX_ITERS} · ${log.slice(-toolUses.length).join(", ") || toolUses.map((t) => t.name).join(", ")}`);
     }
-    totalUsage.input_tokens += usage.input_tokens || 0;
-    totalUsage.output_tokens += usage.output_tokens || 0;
-    const content = raw.content || [];
-    const textParts = content.filter((b) => b.type === "text").map((b) => b.text);
-    if (textParts.length) lastText = textParts.join("\n").trim();
-    const toolUses = content.filter((b) => b.type === "tool_use");
-    if (raw.stop_reason !== "tool_use" || toolUses.length === 0) break;
-    messages.push({ role: "assistant", content });
-    messages.push({
-      role: "user",
-      content: toolUses.map((tu) => ({ type: "tool_result", tool_use_id: tu.id, content: String(runTool(tu.name, tu.input || {})) })),
-    });
-    emit(`iter ${iters + 1}/${MAX_ITERS} · ${log.slice(-toolUses.length).join(", ") || toolUses.map((t) => t.name).join(", ")}`);
+  } finally {
+    // A run that stops between a tool_use and its result (cancel, error, cap) cannot be resumed
+    // with that dangling turn; drop it so the thread stays valid.
+    const last = messages[messages.length - 1];
+    if (!thread.pendingAskId && last?.role === "assistant" && Array.isArray(last.content) && last.content.some((b) => b.type === "tool_use")) {
+      messages.pop();
+    }
+    thread.runs = thread.runs || [];
+    thread.runs.push({ at: new Date().toISOString(), iters, usage: totalUsage, question, cancelled });
+    saveThread(thread);
   }
 
-  // Build the diff from captured originals.
   let diff = "";
   for (const [abs, orig] of originals) {
     let now;
@@ -229,11 +322,15 @@ export async function runGlmAgent({ model, task, context, workdir, maxTokens = 1
 
   return {
     text: cancelled
-      ? (lastText ? lastText + "\n\n(cancelled mid-run — partial work above; changes so far are shown in the diff and can be reverted.)" : "(cancelled before GLM produced output — no changes.)")
-      : lastText || "(GLM finished without a summary)",
+      ? (lastText ? lastText + "\n\n(cancelled mid-run — partial work above; changes so far are in the diff and can be reverted.)" : "(cancelled before GLM produced output — no changes.)")
+      : lastText || (question ? "(GLM paused to ask a question)" : "(GLM finished without a summary)"),
+    question,
+    threadId: thread.id,
+    rulesLoaded: Boolean(repo.rules),
+    codegraphIndexed: repo.indexed,
     actions: log,
     iters,
-    hitCap: iters >= MAX_ITERS,
+    hitCap: iters >= MAX_ITERS && !question,
     cancelled,
     usage: totalUsage,
     root,
