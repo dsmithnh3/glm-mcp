@@ -34,6 +34,18 @@ becomes `waiting_for_orchestrator`, and the orchestrator's `reply` comes back as
 Threads are saved under `~/.claude/glm-mcp/threads/` with mode 0600, so a thread can be continued
 after the server restarts. Running-job state is held in memory by the server process.
 
+## Writing a brief
+
+Every `glm_agent` brief has four parts, following Z.ai's coding-agent best practice
+([docs.z.ai/devpack/resources/best-practice](https://docs.z.ai/devpack/resources/best-practice)):
+
+| Part | Contents |
+| --- | --- |
+| Goal | The one outcome wanted. |
+| Context | The absolute workdir; the files, symbols and readers CodeGraph found; decisions already made. |
+| Constraints | The repo rules that apply, what not to touch, and dependency limits. |
+| Done when | The exact tests or commands that must pass, with exit codes, and what GLM must report. |
+
 ## What GLM is told
 
 Every run's system prompt contains:
