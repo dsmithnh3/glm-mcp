@@ -1,6 +1,6 @@
 # glm-mcp — GLM as a cheap delegate for your AI coding agent
 
-**GLM** (Zhipu / Z.ai) as a **~10x cheaper** delegate for your AI coding agent. Your expensive
+**GLM** (Zhipu / Z.ai) as a **~2-3x cheaper** delegate for your AI coding agent. Your expensive
 main model — **Claude Opus**, **Copilot's** default, or **Codex** — orchestrates and reviews; **GLM** does
 the actual work, billed on cheap GLM tokens. GLM exposes an Anthropic-compatible `/v1/messages`
 endpoint, so it drops into anything that already speaks Anthropic. This repo wraps it as an
@@ -61,7 +61,7 @@ Plain-English walkthrough:
    the main agent.
 6. The main agent **reviews**; every GLM call is also appended to the `usage.jsonl` **ledger**.
 
-**Token economics.** Delegated work bills **GLM tokens** (~10x cheaper). The main model only
+**Token economics.** Delegated work bills **GLM tokens** (~2-3x cheaper than Opus per token, off-peak; less at peak). The main model only
 pays for orchestration + review. A **near-100% GLM share** requires the full-GLM launcher
 ([`claude/glm-code.mjs`](claude/glm-code.mjs)), because a hybrid main agent always carries
 per-turn session context — that context is the floor on its token share.
@@ -207,9 +207,11 @@ way — even at peak it is cheaper than the main model.
 ## Proof it's really GLM
 
 - **`usage.jsonl` ledger** — every GLM call is appended on disk with `model` + `input_tokens` +
-  `output_tokens`. Claude: `~/.claude/glm-mcp/usage.jsonl`; Copilot:
-  `~/.glm-mcp/glm-mcp/usage.jsonl`. Independent of the Z.ai dashboard.
-- **`glm_status`** — prints the cumulative ledger totals (calls, tokens, per-model counts).
+  `output_tokens` + `est_cost_usd` (that call's estimated USD cost). Claude:
+  `~/.claude/glm-mcp/usage.jsonl`; Copilot: `~/.glm-mcp/glm-mcp/usage.jsonl`. Independent of the
+  Z.ai dashboard.
+- **`glm_status`** — prints the cumulative ledger totals (calls, tokens, per-model counts,
+  `est_cost_usd`, and `lines_with_cost`; older ledger lines carry no cost field).
 - **`=== GLM STATS ===`** block — printed after every `glm_agent` run: model, tokens delegated,
   iterations, files changed, est. cost vs Opus.
 

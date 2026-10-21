@@ -77,7 +77,7 @@ server.registerTool(
   {
     title: "Delegate a subtask to GLM",
     description:
-      "Text-in/text-out subtask on GLM (~10x cheaper than Opus); returns text only. GLM has no " +
+      "Text-in/text-out subtask on GLM (~2-3x cheaper than Opus per token, off-peak; less at peak); returns text only. GLM has no " +
       "file/tool access -- put everything in task+context. For file edits use glm_agent instead. " +
       "Not for sensitive, long-debugging, large-refactor, or parallel work.",
     inputSchema: {
@@ -230,7 +230,7 @@ server.registerTool(
   {
     title: "Run GLM as a file-accessing agent",
     description:
-      "Run GLM as a real coding agent with its OWN file tools (read/write/edit/list/bash) on GLM tokens (~10x cheaper than Opus). " +
+      "Run GLM as a real coding agent with its OWN file tools (read/write/edit/list/bash) on GLM tokens (~2-3x cheaper than Opus per token, off-peak; less at peak). " +
       "GLM receives the repo's AGENTS.md/CLAUDE.md, uses `codegraph explore` itself, and its shell runs through the same safety hooks as yours. " +
       "Every run is a THREAD: GLM can pause with a question (ask_orchestrator); answer it and check/continue/cancel runs with glm_thread. " +
       "Pass task + absolute workdir (ideally a git worktree). background:true returns the thread_id immediately so you can keep working. " +

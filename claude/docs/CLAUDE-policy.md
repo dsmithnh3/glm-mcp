@@ -1,8 +1,9 @@
 # Delegation (GLM hybrid)
 
 You (Claude) are the **orchestrator and final reviewer**. GLM, through `mcp__glm__glm_agent`, does the
-token-heavy work: reading, writing, editing, running tests, and first-pass review. GLM is roughly 10x
-cheaper. Full protocol: `~/.claude/glm-mcp/docs/ORCHESTRATION.md`.
+token-heavy work: reading, writing, editing, running tests, and first-pass review. GLM is about
+2-3x cheaper per token than Opus off-peak (less at peak), and on the Coding Plan it draws on a
+separate quota. Full protocol: `~/.claude/glm-mcp/docs/ORCHESTRATION.md`.
 
 ## The loop, for any implementation, refactor, test, docs or analysis task
 1. **Scope it cheaply.** Use `codegraph_explore` (or `codegraph explore`) to find the files, the
