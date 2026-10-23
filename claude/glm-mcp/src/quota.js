@@ -7,11 +7,14 @@
 // it, the request headers or the response body.
 //
 // The read does NOT go through glmClient's generation semaphore: a quota read must not queue behind
-// a running agent call. Several sessions poll it, so the last good answer is cached for TTL_MS and
-// concurrent reads share one request.
+// a running agent call. Several sessions poll it, so the last good answer is cached for TTL_MS, a
+// failure for FAIL_TTL_MS (so a Z.ai outage is not asked again by every poll), and concurrent reads
+// share one request. The URL is fixed in code: nothing in the environment can send the key elsewhere,
+// and redirects are refused for the same reason.
 
-const DEFAULT_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
+const QUOTA_URL = "https://api.z.ai/api/monitor/usage/quota/limit";
 const DEFAULT_TTL_MS = 60_000;
+const DEFAULT_FAIL_TTL_MS = 15_000;
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 // Only these have been observed. Anything else is passed through as "unknown" with its raw
@@ -64,31 +67,45 @@ export function createQuotaReader({
   apiKey,
   fetch: fetchImpl = globalThis.fetch,
   now = () => Date.now(),
-  url = process.env.GLM_QUOTA_URL || DEFAULT_URL,
+  url = QUOTA_URL, // tests only: the server never passes another
   ttlMs = DEFAULT_TTL_MS,
+  failTtlMs = DEFAULT_FAIL_TTL_MS,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 } = {}) {
   let lastGood = null; // { payload, at }
+  let lastFail = null; // { result, at }
   let inflight = null;
 
+  async function request(signal) {
+    let res;
+    try {
+      res = await fetchImpl(url, { method: "GET", headers: { Authorization: apiKey, Accept: "application/json" }, redirect: "error", signal });
+    } catch {
+      throw new QuotaError(signal.aborted ? "timed out" : "network error");
+    }
+    if (!res || res.status !== 200) throw new QuotaError(`HTTP ${res ? res.status : "no response"}`);
+    let body;
+    try {
+      body = await res.json();
+    } catch {
+      throw new QuotaError(signal.aborted ? "timed out" : "bad response shape");
+    }
+    return parseQuota(body, new Date(now()).toISOString());
+  }
+
+  // The timer settles the read on its own, so a fetch that ignores the abort cannot hang every
+  // later read behind the shared in-flight request.
   async function fetchOnce() {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new QuotaError("timed out"));
+      }, timeoutMs);
+    });
     try {
-      let res;
-      try {
-        res = await fetchImpl(url, { method: "GET", headers: { Authorization: apiKey, Accept: "application/json" }, signal: controller.signal });
-      } catch {
-        throw new QuotaError(controller.signal.aborted ? "timed out" : "network error");
-      }
-      if (!res || res.status !== 200) throw new QuotaError(`HTTP ${res ? res.status : "no response"}`);
-      let body;
-      try {
-        body = await res.json();
-      } catch {
-        throw new QuotaError(controller.signal.aborted ? "timed out" : "bad response shape");
-      }
-      return parseQuota(body, new Date(now()).toISOString());
+      return await Promise.race([request(controller.signal), timeout]);
     } finally {
       clearTimeout(timer);
     }
@@ -97,15 +114,19 @@ export function createQuotaReader({
   return async function readQuota({ fresh = false } = {}) {
     if (!apiKey) return { ok: false, error: "no GLM key configured" };
     if (!fresh && lastGood && now() - lastGood.at < ttlMs) return { ...lastGood.payload, cached: true };
+    if (!fresh && lastFail && now() - lastFail.at < failTtlMs) return lastFail.result;
     if (!inflight) {
       inflight = fetchOnce()
         .then((payload) => {
           lastGood = { payload, at: now() };
+          lastFail = null;
           return payload;
         })
         .catch((e) => {
           const error = e instanceof QuotaError ? e.message : "unexpected error";
-          return { ok: false, error, ...(lastGood ? { lastGood: lastGood.payload } : {}) };
+          const result = { ok: false, error, ...(lastGood ? { lastGood: lastGood.payload } : {}) };
+          lastFail = { result, at: now() };
+          return result;
         })
         .finally(() => {
           inflight = null;

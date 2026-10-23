@@ -44,12 +44,15 @@ test("parses the verbatim live response into two windows", async () => {
   noKey(r);
 });
 
-test("sends the raw key with no Bearer prefix, and only to the quota URL", async () => {
+test("sends the raw key with no Bearer prefix, to Z.ai's quota URL only, refusing redirects", async () => {
   const fetch = fakeFetch(() => response(LIVE));
-  await createQuotaReader({ apiKey: SENTINEL, fetch, url: "https://example.test/quota" })();
+  process.env.GLM_QUOTA_URL = "https://attacker.test/collect"; // ignored: the URL is fixed in code
+  await createQuotaReader({ apiKey: SENTINEL, fetch })();
+  delete process.env.GLM_QUOTA_URL;
   assert.equal(fetch.calls.length, 1);
-  assert.equal(fetch.calls[0].url, "https://example.test/quota");
+  assert.equal(fetch.calls[0].url, "https://api.z.ai/api/monitor/usage/quota/limit");
   assert.equal(fetch.calls[0].init.headers.Authorization, SENTINEL);
+  assert.equal(fetch.calls[0].init.redirect, "error");
 });
 
 test("an unknown unit, or an unknown type, is kept as unknown with its raw fields", () => {
@@ -96,7 +99,7 @@ test("a timeout returns ok:false, with lastGood after an earlier success", async
   const fetch = fakeFetch((n, init) => n === 1
     ? response(LIVE)
     : new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted")))));
-  const read = createQuotaReader({ apiKey: SENTINEL, fetch, now: () => t, timeoutMs: 20, ttlMs: 1000 });
+  const read = createQuotaReader({ apiKey: SENTINEL, fetch, now: () => t, timeoutMs: 20, ttlMs: 1000, failTtlMs: 0 });
   const first = await read();
   assert.equal(first.ok, true);
   t = 5000; // past the TTL, so the next read goes upstream and hangs
@@ -144,4 +147,29 @@ test("no key configured answers without a request", async () => {
     assert.deepEqual(await createQuotaReader({ apiKey, fetch })(), { ok: false, error: "no GLM key configured" });
   }
   assert.equal(fetch.calls.length, 0);
+});
+
+test("a fetch that ignores the abort still times out, and the next read is not stuck behind it", async () => {
+  let t = 0;
+  const fetch = fakeFetch(() => new Promise(() => {})); // never settles, ignores the signal
+  const read = createQuotaReader({ apiKey: SENTINEL, fetch, now: () => t, timeoutMs: 20, failTtlMs: 0 });
+  assert.deepEqual(await read(), { ok: false, error: "timed out" });
+  t = 1;
+  assert.deepEqual(await read(), { ok: false, error: "timed out" });
+  assert.equal(fetch.calls.length, 2, "the second read made its own request");
+});
+
+test("a failure is cached briefly, so an outage is not asked again by every poll; fresh still asks", async () => {
+  let t = 0;
+  const fetch = fakeFetch(() => response({}, 503));
+  const read = createQuotaReader({ apiKey: SENTINEL, fetch, now: () => t, failTtlMs: 15_000 });
+  await read();
+  t = 14_000;
+  assert.deepEqual(await read(), { ok: false, error: "HTTP 503" });
+  assert.equal(fetch.calls.length, 1);
+  await read({ fresh: true });
+  assert.equal(fetch.calls.length, 2);
+  t = 30_000;
+  await read();
+  assert.equal(fetch.calls.length, 3);
 });

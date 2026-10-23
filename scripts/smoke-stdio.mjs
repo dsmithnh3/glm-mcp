@@ -8,8 +8,8 @@
 // initialized -> tools/list), and asserts the advertised tool set each time:
 //   (1) default env (no GLM_DELEGATE)         -> glm_agent, glm_recommend, glm_status (3 tools),
 //                                                 plus glm_quota and glm_thread on the Claude server
-//   (2) GLM_DELEGATE=on                       -> glm_delegate, glm_agent, glm_recommend,
-//                                                 glm_status                                  (4 tools)
+//   (2) GLM_DELEGATE=on                       -> glm_delegate plus the default set
+//                                                 (4 tools; 6 on the Claude server)
 //
 // glm_delegate is OPT-IN (default OFF): orchestrators always use glm_agent, which also handles
 // text-only tasks. No deps. No network. No key -- the server boots and answers MCP introspection
