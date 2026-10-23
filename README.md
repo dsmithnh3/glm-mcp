@@ -74,6 +74,7 @@ per-turn session context — that context is the floor on its token share.
 | `glm_delegate` | GLM tokens (opt-in) | Pure text generation — text in, text out. **Hidden by default** (`glm_agent` handles text-only tasks too); set `GLM_DELEGATE=on` to expose it. |
 | `glm_recommend` | free (local) | GLM-vs-main-model advisory: which engine, which GLM model, confidence, and reasons. No GLM call. |
 | `glm_status` | free (local) | Peak window, active model, **usage-ledger totals** (proof of GLM spend), and config health. No GLM call. |
+| `glm_quota` | free (one Z.ai request, cached ~60 s) | Your Coding Plan quota: the 5-hour and weekly windows (limit, used, remaining, percent, reset time) and plan level. `fresh: true` skips the cache. Never fails the call: an upstream problem returns `ok: false` with a short reason and the last good reading. Claude server only. |
 
 **Live progress.** `glm_agent` streams MCP **progress notifications** while it runs —
 current iteration, token count, and **tok/s** — shown live in Claude Code and mapped to
