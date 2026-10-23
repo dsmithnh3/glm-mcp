@@ -6,7 +6,8 @@
 // Spawns the server TWICE in fresh temp dirs with NO GLM_API_KEY in its environment (and no .env
 // on disk to be picked up), performs the MCP stdio handshake (initialize -> notifications/
 // initialized -> tools/list), and asserts the advertised tool set each time:
-//   (1) default env (no GLM_DELEGATE)         -> glm_agent, glm_recommend, glm_status        (3 tools)
+//   (1) default env (no GLM_DELEGATE)         -> glm_agent, glm_recommend, glm_status (3 tools),
+//                                                 plus glm_quota and glm_thread on the Claude server
 //   (2) GLM_DELEGATE=on                       -> glm_delegate, glm_agent, glm_recommend,
 //                                                 glm_status                                  (4 tools)
 //
@@ -174,13 +175,13 @@ function runSmoke(extraEnv, expectedTools, label) {
   });
 }
 
-// The Claude server also exposes glm_thread (the orchestrator's live channel to GLM threads);
-// the Codex server (codex/glm-server.mjs) does not.
-const THREAD_TOOLS = /[\\/]claude[\\/]glm-mcp[\\/]/.test(SERVER_PATH) ? ["glm_thread"] : [];
+// The Claude server also exposes glm_thread (the orchestrator's live channel to GLM threads) and
+// glm_quota (the Coding Plan quota); the Codex server (codex/glm-server.mjs) does neither.
+const CLAUDE_ONLY_TOOLS = /[\\/]claude[\\/]glm-mcp[\\/]/.test(SERVER_PATH) ? ["glm_quota", "glm_thread"] : [];
 
 try {
   // (1) Default env (GLM_DELEGATE off) -> glm_delegate is hidden.
-  const base = ["glm_agent", ...THREAD_TOOLS, "glm_recommend", "glm_status"];
+  const base = ["glm_agent", ...CLAUDE_ONLY_TOOLS, "glm_recommend", "glm_status"];
   await runSmoke({}, base, "default");
 
   // (2) GLM_DELEGATE=on -> glm_delegate is exposed.

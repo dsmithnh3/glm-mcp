@@ -15,7 +15,8 @@ rules, provider adapters, and fixes.
 
 ## Project layout
 ```
-glm-mcp/src/index.js      MCP tool registrations (glm_delegate, glm_agent, glm_recommend, glm_status)
+glm-mcp/src/index.js      MCP tool registrations (glm_delegate, glm_agent, glm_thread, glm_recommend, glm_status, glm_quota)
+glm-mcp/src/quota.js      Coding Plan quota reader (validated, cached, never throws upstream errors)
 glm-mcp/src/router.js     GLM-vs-Opus decision logic (pure, unit-testable)
 glm-mcp/src/glmClient.js  GLM Anthropic-format API client (serialized + retries)
 glm-mcp/src/glmAgent.js   GLM file-agent loop (read/write/edit/bash, diff, dry-run)

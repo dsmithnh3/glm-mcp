@@ -63,7 +63,11 @@ export function usageSummary() {
 }
 
 const BASE_URL = (process.env.GLM_BASE_URL || "https://api.z.ai/api/anthropic").replace(/\/$/, "");
-const API_KEY = process.env.GLM_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || "";
+/** The GLM key, resolved one way for every caller in this server (generation and quota). Never logged or returned. */
+export function resolveApiKey(env = process.env) {
+  return env.GLM_API_KEY || env.ANTHROPIC_AUTH_TOKEN || "";
+}
+const API_KEY = resolveApiKey();
 const MAX_CONCURRENT = Math.max(1, parseInt(process.env.GLM_MAX_CONCURRENT || "1", 10));
 const MAX_RETRIES = Math.max(0, parseInt(process.env.GLM_MAX_RETRIES || "4", 10));
 // Idle/stall timeout: abort a turn only if NO stream bytes arrive for this long (default 2 min).

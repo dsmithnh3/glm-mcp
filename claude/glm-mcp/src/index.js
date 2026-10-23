@@ -6,6 +6,7 @@
 //   glm_delegate   -- text-only subtask (opt-in: GLM_DELEGATE=on)
 //   glm_recommend  -- advisory: should this task go to GLM or Opus? which model?
 //   glm_status     -- peak window, model picks, cost multipliers, config sanity
+//   glm_quota      -- Z.ai Coding Plan quota: 5-hour and weekly windows, plan level (cached ~60 s)
 //
 // Design notes baked in (see docs/research):
 //   * "auto" model selection defaults to GLM-5.2 in both windows; since GLM-5.2 carries the
@@ -17,7 +18,8 @@ import "./loadEnv.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { glmMessage, config, usageSummary, effortConfig } from "./glmClient.js";
+import { glmMessage, config, usageSummary, effortConfig, resolveApiKey } from "./glmClient.js";
+import { createQuotaReader } from "./quota.js";
 import {
   resolveModel,
   recommend,
@@ -36,7 +38,7 @@ import { resolve as resolvePath } from "node:path";
 
 const CHARACTER_LIMIT = 50000;
 
-const server = new McpServer({ name: "glm-mcp", version: "1.4.0" });
+const server = new McpServer({ name: "glm-mcp", version: "1.5.0" });
 
 const TASK_TYPES = [
   // strong GLM
@@ -456,6 +458,25 @@ server.registerTool(
         : "No API key loaded -- set GLM_API_KEY in glm-mcp/.env or .mcp.json env before delegating.",
     };
     return { content: [{ type: "text", text: JSON.stringify(status, null, 2) }] };
+  }
+);
+
+// ----------------------------- glm_quota -----------------------------
+// Kept apart from glm_status: that tool is free and local, this one calls Z.ai. No field is shared.
+const readQuota = createQuotaReader({ apiKey: resolveApiKey() });
+server.registerTool(
+  "glm_quota",
+  {
+    title: "GLM Coding Plan quota",
+    description:
+      "The Z.ai GLM Coding Plan quota: the 5-hour and weekly windows (limit, used, remaining, percent, resetsAt) and the plan level. " +
+      "Answers from a ~60 s cache unless fresh is true. Never fails the call: an upstream problem returns ok:false with a short reason and the last good reading.",
+    inputSchema: { fresh: z.boolean().optional().describe("Bypass the ~60 s cache and ask Z.ai now.") },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  async ({ fresh } = {}) => {
+    const result = await readQuota({ fresh: fresh === true });
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   }
 );
 

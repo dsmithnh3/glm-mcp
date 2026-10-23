@@ -12,12 +12,26 @@
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 
 // Portable: resolve the router relative to this hook's own location.
 // Layout: <claude>/hooks/glm_subagent_router.mjs  +  <claude>/glm-mcp/src/router.js
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROUTER = resolve(HERE, "..", "glm-mcp", "src", "router.js");
 const MCP_ENV = resolve(HERE, "..", "glm-mcp", ".env");
+
+// The GLM delegation switch, shared with the glm-switch mod: ~/.claude/glm-mode holds "on" or "off".
+// Only "off" (any case, surrounding whitespace ignored) silences this hook; a missing, unreadable or
+// unrecognised file means on, which is the behaviour before the switch existed. GLM_MODE_FILE
+// points it elsewhere (tests).
+const MODE_FILE = process.env.GLM_MODE_FILE || resolve(homedir(), ".claude", "glm-mode");
+function delegationOff() {
+  try {
+    return readFileSync(MODE_FILE, "utf8").trim().toLowerCase() === "off";
+  } catch {
+    return false;
+  }
+}
 
 // Load the MCP server's .env so the hook honors the SAME settings the server uses
 // (GLM_COST_BIAS, GLM_USE_HAIKU, peak window, ...). Best-effort; safe if the file is absent.
@@ -134,6 +148,8 @@ function inferProfile(text) {
 }
 
 (async () => {
+  // Switched off: no advice at all, so the Agent call goes ahead exactly as Claude Code would run it.
+  if (delegationOff()) process.exit(0);
   try {
     loadMcpEnv(); // honor .env settings before importing the router
     const raw = await readStdin();

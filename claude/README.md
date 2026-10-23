@@ -123,6 +123,7 @@ tool-heavy dependent loops, huge context, vision, or anything you mark sensitive
 |---|---|---|
 | `glm_recommend` | free (local) | GLM-or-Opus decision + model pick + reasons. |
 | `glm_status` | free (local) | Peak window, active model, key/config health. |
+| `glm_quota` | free (one Z.ai request, cached ~60 s) | Coding Plan quota: 5-hour and weekly windows and plan level, from Z.ai's undocumented `monitor/usage/quota/limit` endpoint. The key never leaves the server. |
 | `glm_delegate` | GLM tokens | Text in → text out. GLM drafts; you place it. |
 | `glm_agent` | GLM tokens | GLM works your repo directly (read/write/edit/bash), with the repo's AGENTS.md/CLAUDE.md and CodeGraph. Every run is a **thread**; `background: true` returns its id at once. Returns the full diff, action log and a per-file revert hint; supports `dry_run`. |
 | `glm_thread` | free / GLM tokens | The live channel: `list`, `status`, `wait`, `reply` (answer GLM's question or follow up), `cancel`, `history`. |
