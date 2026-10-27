@@ -29,9 +29,12 @@ const finite = (v) => typeof v === "number" && Number.isFinite(v);
 function toWindow(l) {
   if (!l || typeof l !== "object") return null;
   const { type, unit, number, usage, currentValue, remaining, percentage, nextResetTime } = l;
-  if (![unit, number, usage, currentValue, remaining, percentage, nextResetTime].every(finite)) return null;
-  const reset = new Date(nextResetTime);
-  if (Number.isNaN(reset.getTime())) return null;
+  if (![unit, number, usage, currentValue, remaining, percentage].every(finite)) return null;
+  // A window that has not started (nothing used yet) comes without nextResetTime: observed live on
+  // the 5-hour window on 2026-10-27. It is a reading with no reset, not a bad shape.
+  if (nextResetTime !== undefined && nextResetTime !== null && !finite(nextResetTime)) return null;
+  const reset = finite(nextResetTime) ? new Date(nextResetTime) : null;
+  if (reset && Number.isNaN(reset.getTime())) return null;
   const known = typeof type === "string" && KNOWN_TYPES.has(type);
   return {
     id: (known && WINDOW_ID[`${unit}:${number}`]) || "unknown",
@@ -42,7 +45,7 @@ function toWindow(l) {
     used: currentValue,
     remaining, // the server's own figure: usage - currentValue has come out 1 higher
     percent: percentage,
-    resetsAt: reset.toISOString(),
+    resetsAt: reset ? reset.toISOString() : null, // null: the window has not started
   };
 }
 

@@ -469,7 +469,7 @@ server.registerTool(
   {
     title: "GLM Coding Plan quota",
     description:
-      "The Z.ai GLM Coding Plan quota: the 5-hour and weekly windows (limit, used, remaining, percent, resetsAt) and the plan level. " +
+      "The Z.ai GLM Coding Plan quota: the 5-hour and weekly windows (limit, used, remaining, percent, resetsAt; resetsAt is null for a window that has not started) and the plan level. " +
       "Answers from a ~60 s cache unless fresh is true. Never fails the call: an upstream problem returns ok:false with a short reason and the last good reading.",
     inputSchema: { fresh: z.boolean().optional().describe("Bypass the ~60 s cache and ask Z.ai now.") },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
