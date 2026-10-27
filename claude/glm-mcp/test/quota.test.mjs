@@ -173,3 +173,30 @@ test("a failure is cached briefly, so an outage is not asked again by every poll
   await read();
   assert.equal(fetch.calls.length, 3);
 });
+
+// The live response from 2026-10-27: the 5-hour window had not started, so it carried no
+// nextResetTime. That is a reading with no reset, not a bad shape.
+test("a window with no nextResetTime parses with resetsAt null", () => {
+  const body = {
+    code: 200, msg: "Operation successful", success: true,
+    data: { level: "pro", limits: [
+      { type: "CREDIT_LIMIT", unit: 3, number: 5, usage: 12000, currentValue: 0, remaining: 12000, percentage: 0 },
+      { type: "CREDIT_LIMIT", unit: 6, number: 1, usage: 60000, currentValue: 0, remaining: 60000, percentage: 0, nextResetTime: 1793718286999 },
+    ] },
+  };
+  const out = parseQuota(body, "2026-10-27T16:00:00.000Z");
+  assert.equal(out.ok, true);
+  assert.equal(out.windows[0].id, "5h");
+  assert.equal(out.windows[0].resetsAt, null);
+  assert.equal(out.windows[1].resetsAt, new Date(1793718286999).toISOString());
+});
+
+test("a nextResetTime that is present but not a number is still a bad shape", () => {
+  const body = {
+    code: 200, success: true,
+    data: { level: "pro", limits: [
+      { type: "CREDIT_LIMIT", unit: 3, number: 5, usage: 12000, currentValue: 0, remaining: 12000, percentage: 0, nextResetTime: "soon" },
+    ] },
+  };
+  assert.throws(() => parseQuota(body, "2026-10-27T16:00:00.000Z"), /bad response shape/);
+});
