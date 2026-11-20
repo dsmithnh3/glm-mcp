@@ -153,12 +153,15 @@ if (!NO_REGISTER) {
   const idx = join(CLAUDE, "glm-mcp", "src", "index.js").replace(/\\/g, "/");
   try {
     try { execSync("claude mcp remove glm -s user", { stdio: "ignore" }); } catch {}
-    execSync(`claude mcp add glm -s user -- node "${idx}"`, { stdio: "inherit" });
+    // NODE_USE_ENV_PROXY=1: Node's built-in fetch ignores HTTPS_PROXY otherwise, so behind a
+    // key-injecting proxy the server sends the placeholder key straight to Z.ai (HTTP 401).
+    // It is a no-op when no proxy variable is set.
+    execSync(`claude mcp add glm -s user -e NODE_USE_ENV_PROXY=1 -- node "${idx}"`, { stdio: "inherit" });
     log("  registered (key is read from .env).");
   } catch (e) {
     log("  ⚠ Could not run `claude mcp add` (" + e.message + ").");
     log("  Register manually:");
-    log(`    claude mcp add glm -s user -- node "${idx}"`);
+    log(`    claude mcp add glm -s user -e NODE_USE_ENV_PROXY=1 -- node "${idx}"`);
   }
 }
 
