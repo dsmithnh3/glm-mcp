@@ -81,7 +81,7 @@ The installer:
 3. installs the `glm` subagent (`~/.claude/agents/glm.md`) and the hook (`~/.claude/hooks/`),
 4. wires the hook into `~/.claude/settings.json` (backs it up first),
 5. adds a short delegation policy to `~/.claude/CLAUDE.md`,
-6. registers the MCP server with `claude mcp add glm -s user`.
+6. registers the MCP server with `claude mcp add glm -s user -e NODE_USE_ENV_PROXY=1` (so Node's `fetch` honours `HTTPS_PROXY` when the key is injected by a proxy; a no-op without one).
 
 Then **restart Claude Code** and run `glm_status` — you should see `"api_key_loaded": true`.
 
